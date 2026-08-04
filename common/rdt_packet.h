@@ -15,12 +15,6 @@ struct RDTHeader {
 };
 #pragma pack(pop)
 
-constexpr size_t MAX_PAYLOAD_SIZE = 1400; // Để kích thước gói UDP < 1500 bytes (MTU)
-
-struct RDTPacket {
-    RDTHeader header;
-    char payload[MAX_PAYLOAD_SIZE];
-};
 
 constexpr size_t MAX_PAYLOAD_SIZE = 1400; // Để kích thước gói UDP < 1500 byte
 constexpr size_t RDT_HEADER_SIZE  = sizeof(RDTHeader);
