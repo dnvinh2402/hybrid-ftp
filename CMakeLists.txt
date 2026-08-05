@@ -11,3 +11,6 @@ add_executable(ftp_server server/main_server.cpp)
 
 # Build Executable cho Client
 add_executable(ftp_client client/main_client.cpp)
+
+find_package(Threads REQUIRED)
+target_link_libraries(ftp_server PRIVATE Threads::Threads)
