@@ -41,9 +41,9 @@ int main(int argc,char* argv[])
 
         FileReceiver fr(receiver);
 
-        fr.receiveFile("received.png");
-        fr.receiveFile("received.txt");
-        fr.receiveFile("received.pdf");
+        // fr.receiveFile("received.png");
+        fr.receiveFile();
+        // fr.receiveFile("received.pdf");
     }
     else
     {
@@ -53,18 +53,18 @@ int main(int argc,char* argv[])
 
         FileSender fs(sender);
 
-        fs.sendFile(
-            "picture.png",
-            "127.0.0.1",
-            5000);
+        // fs.sendFile(
+        //     "picture.png",
+        //     "127.0.0.1",
+        //     5000);
         fs.sendFile(
             "sample.txt",
             "127.0.0.1",
             5000);
-        fs.sendFile(
-            "Singleton.pdf",
-            "127.0.0.1",
-            5000);
+        // fs.sendFile(
+        //     "Singleton.pdf",
+        //     "127.0.0.1",
+        //     5000);
     }
 
 #ifdef _WIN32

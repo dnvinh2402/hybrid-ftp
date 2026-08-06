@@ -6,6 +6,8 @@
 #include "rdt_receiver.h"
 #include "../common/logger.h"
 #include "../common/rdt_packet.h"
+#include "file_metadata.h"
+#include "packet_parser.h"
 class RDTReceiver;
 
 class FileReceiver
@@ -15,12 +17,12 @@ private:
     TransferSession session;
     void resetSession();
     void printSummary() const;
-    bool isUnexpectedPacket(const RDTPacket& packet);
+    bool isUnexpectedSequence(const RDTPacket& packet);
 
 public:
     explicit FileReceiver(RDTReceiver &receiver);
 
-    bool receiveFile(const std::string &outputFile);
+    bool receiveFile();
     const TransferSession& getSession() const;
 };
 

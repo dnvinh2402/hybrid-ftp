@@ -18,7 +18,9 @@ bool UDPSocket::create()
     socketFd = socket(AF_INET, SOCK_DGRAM, 0);
 
     if (socketFd == INVALID_SOCKET)
-    {
+    {   
+        std::cout << "WSA Error = " << WSAGetLastError() << std::endl;
+        //tam de test
         log_error("Failed to create UDP socket.");
         return false;
     }

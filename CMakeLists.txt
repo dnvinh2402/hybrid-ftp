@@ -19,11 +19,13 @@ add_executable(test_udp_socket
 add_executable(test_send_receive
     tests/test_send_receive.cpp
     network/udp_socket.cpp
-    network/packet_builder.cpp
+    network/packet_builder.cpp 
+    network/packet_parser.cpp
 )
 add_executable(test_packet_builder
     tests/test_packet_builder.cpp
-    network/packet_builder.cpp
+    network/packet_builder.cpp 
+    network/packet_parser.cpp
 )
 add_executable(test_timeout
     tests/test_timeout.cpp
@@ -31,13 +33,15 @@ add_executable(test_timeout
 )
 add_executable(test_checksum
     tests/test_checksum.cpp
-    network/packet_builder.cpp
+    network/packet_builder.cpp 
+    network/packet_parser.cpp
 )
 add_executable(
     test_retransmission
     tests/test_retransmission.cpp
     network/udp_socket.cpp
-    network/packet_builder.cpp
+    network/packet_builder.cpp 
+    network/packet_parser.cpp
     network/rdt_sender.cpp
     network/rdt_receiver.cpp
 )
@@ -46,12 +50,14 @@ add_executable(test_stop_and_wait
     network/udp_socket.cpp
     network/rdt_sender.cpp
     network/rdt_receiver.cpp
-    network/packet_builder.cpp
+    network/packet_builder.cpp 
+    network/packet_parser.cpp
 )
 add_executable(test_file_sender
     tests/test_file_sender.cpp
     network/file_sender.cpp
-    network/packet_builder.cpp
+    network/packet_builder.cpp 
+    network/packet_parser.cpp
     network/udp_socket.cpp
     network/rdt_sender.cpp
 )
@@ -60,7 +66,8 @@ add_executable(test_file_transfer
     tests/test_file_transfer.cpp
     network/file_sender.cpp
     network/file_receiver.cpp
-    network/packet_builder.cpp
+    network/packet_builder.cpp 
+    network/packet_parser.cpp
     network/udp_socket.cpp
     network/rdt_sender.cpp
     network/rdt_receiver.cpp
@@ -71,10 +78,32 @@ add_executable(test_transfer_session
     network/file_sender.cpp
     network/file_receiver.cpp
 
-    network/packet_builder.cpp
+    network/packet_builder.cpp 
+    network/packet_parser.cpp
     network/udp_socket.cpp
     network/rdt_sender.cpp
     network/rdt_receiver.cpp
+)
+add_executable(test_data_channel_transfer
+    tests/test_data_channel_transfer.cpp
+
+    network/data_channel.cpp
+
+    network/file_sender.cpp
+    network/file_receiver.cpp
+
+    network/rdt_sender.cpp
+    network/rdt_receiver.cpp
+
+    network/udp_socket.cpp
+    network/packet_builder.cpp 
+    network/packet_parser.cpp
+)
+add_executable(test_packet_parser
+    tests/test_packet_parser.cpp
+
+    network/packet_builder.cpp
+    network/packet_parser.cpp
 )
 if (WIN32)
     target_link_libraries(ftp_server ws2_32)
@@ -89,4 +118,6 @@ if (WIN32)
     target_link_libraries(test_file_sender ws2_32)
     target_link_libraries(test_file_transfer ws2_32)
     target_link_libraries(test_transfer_session ws2_32)
+    target_link_libraries(test_data_channel_transfer ws2_32)
+    target_link_libraries(test_packet_parser ws2_32)
 endif()
