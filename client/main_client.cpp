@@ -35,12 +35,29 @@ void init_sockets() {
 #endif
 }
 
-void cleanup_socket() {
+void cleanup_sockets() {
 #ifdef _WIN32
     WSACleanup();
 #endif
 }
 
+
+bool receive_reply(SOCKET socket, std::string &recv_buffer, std::string& out_line){
+    size_t pos;
+    while((pos = recv_buffer.find('\n')) == std::string::npos){
+        char buffer[BUFFER_SIZE];
+        int bytes_read = recv(socket, buffer, BUFFER_SIZE - 1, 0);
+        if (bytes_read <= 0) return false;
+
+        recv_buffer.append(buffer, bytes_read);
+    }
+
+    out_line = recv_buffer.substr(0, pos + 1);
+    recv_buffer.erase(0, pos + 1);
+    if (!out_line.empty() && out_line.back() == '\r') out_line.pop_back();
+    return true;
+
+}
 // Hàm bóc tách IP và Port từ phản hồi 227 của PASV
 bool parsePasvResponse(const std::string& response, std::string& outIp, int& outPort) {
     size_t start = response.find('(');
@@ -56,43 +73,78 @@ bool parsePasvResponse(const std::string& response, std::string& outIp, int& out
     return true;
 }
 
-int main() {
-    // 1. Tạo TCP Socket & Connect tới Server (127.0.0.1:2121)
-    // 2. Nhận câu chào 220 từ Server
+int main(int argc, char* argv[]) {
+    init_sockets();
     
-    std::string userInput;
-    while (true) {
+    std::string server_ip = (argc >= 2) ? argv[1]: "127.0.0.1";
+    int server_port = (argc >= 3) ? std::atoi(argv[2]) : 2121;
+
+    SOCKET sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock == INVALID_SOCKET) {
+        log_error("Socket creation failed.");
+        cleanup_sockets();
+        return 1;
+    }
+
+    sockaddr_in server_addr{};
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(server_port);
+    if (inet_pton(AF_INET, server_ip.c_str(), &server_addr.sin_addr) <= 0){
+        log_error("Invalid server IP address: " + server_ip);
+        closesocket(sock);
+        cleanup_sockets();
+        return 1;
+    }
+
+    log_info("Connecting to " + server_ip + ":" + std::to_string(server_port) + "...");
+    if (connect(sock, (struct sockaddr*)&server_addr, sizeof(server_addr)) == SOCKET_ERROR){
+        log_error("Connection failed. Is the server running?");
+        closesocket(sock);
+        cleanup_sockets();
+        return 1;
+    }
+
+    log_info("Connected!");
+    std::string recv_buffer;
+
+    // Đọc câu chào 220 đầu tiên server tự động gửi ngay sau khi connect
+    std::string greeting;
+    if (receive_reply(sock, recv_buffer, greeting)){
+        std::cout << greeting << std::endl;
+    }
+
+    // vong lap cli
+    std::string input;
+    while(true){
         std::cout << "ftp> ";
-        std::getline(std::cin, userInput);
-        if (userInput.empty()) continue;
-        
-        // Ví dụ xử lý lệnh download file: get <filename>
-        if (userInput.rfind("get ", 0) == 0) {
-            std::string filename = userInput.substr(4);
-            
-            // BƯỚC A: Gửi PASV qua TCP để xin cổng UDP
-            // send(tcp_sock, "PASV\r\n")
-            // std::string res = read_tcp_line();
-            
-            // BƯỚC B: Lấy IP và Port UDP của Server
-            std::string udpIp; int udpPort;
-            // parsePasvResponse(res, udpIp, udpPort);
-            
-            // BƯỚC C: Gửi lệnh RETR qua TCP
-            // send(tcp_sock, "RETR " + filename + "\r\n")
-            
-            // BƯỚC D: Dùng UDP/RDT của đồng đội để tải file về
-            // rdt_recv_file(udpIp, udpPort, filename);
-            
-            // BƯỚC E: Đọc phản hồi hoàn tất 226 từ TCP
-        }
-        else if (userInput == "quit") {
-            // send(tcp_sock, "QUIT\r\n");
+        if (!std::getline(std::cin, input)) break;
+
+        if (input.empty()) continue;
+
+
+        // gui lenh len server
+        std::string to_send = input + "\r\n";
+        if (send(sock, to_send.c_str(), to_send.length(), 0) == SOCKET_ERROR){
+            log_error("Failed to send command. Connection may be lost.");
             break;
         }
-        // Xử lý các lệnh khác: ls, put, cd, pwd, mkdir...
+
+        //Nhan reply, in ra cho nguoi xem
+        std::string reply;
+        if (!receive_reply(sock, recv_buffer, reply)) {
+            log_error("Server closed the connection");
+            break;
+        }
+
+        std::cout << reply << std::endl;
+
+         // Nếu vừa gửi QUIT thì thoát vòng lặp, đóng chương trình luôn 
+        std::string upper_verb = input.substr(0, input.find(' '));
+        for (auto& c : upper_verb) c = toupper(c);
+        if (upper_verb == "QUIT") break;
     }
-    
-    // Đóng TCP Socket
+
+    closesocket(sock);
+    cleanup_sockets();
     return 0;
 }

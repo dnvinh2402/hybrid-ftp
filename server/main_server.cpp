@@ -461,8 +461,6 @@ int main()
             continue;
         }
 
-        log_info("New client connected!");
-
         // ClientSession session;
         // session.controlSocketFd = static_cast<int>(client_socket);
 
