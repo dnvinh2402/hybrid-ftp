@@ -1,6 +1,13 @@
 #ifndef FILE_SENDER_H
 #define FILE_SENDER_H
 #include "transfer_session.h"
+#include "../common/file_metadata.h"
+#include "file_sender.h"
+#include "rdt_sender.h"
+#include "packet_builder.h"
+#include "../common/logger.h"
+#include "../common/rdt_packet.h"
+#include "transfer_session.h"
 #include <string>
 
 class RDTSender;

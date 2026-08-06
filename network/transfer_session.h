@@ -20,7 +20,8 @@ struct TransferSession
 
     // File
     std::string fileName;
-
+    uint64_t fileSize = 0;
+    
     // State
     bool finished = false;
 };

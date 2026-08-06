@@ -1,13 +1,6 @@
-#include "file_sender.h"
-
-#include "rdt_sender.h"
-#include "packet_builder.h"
-
-#include "../common/logger.h"
-#include "../common/rdt_packet.h"
-
 #include <fstream>
-
+#include "file_sender.h"
+#include <filesystem>
 FileSender::FileSender(RDTSender &sender)
     : rdtSender(sender)
 {
@@ -27,12 +20,87 @@ bool FileSender::sendFile(const std::string &filePath,
     session.fileName = filePath;
 
     std::ifstream file(filePath, std::ios::binary);
+    file.seekg(0, std::ios::end);
 
+    std::cout
+        << "tellg="
+        << file.tellg()
+        << std::endl;
+    std::cout << "Open file = " << filePath << '\n';
+
+    std::cout
+        << "good = " << file.good()
+        << "\nfail = " << file.fail()
+        << "\nbad = " << file.bad()
+        << "\n";
     if (!file.is_open())
     {
         log_error("Cannot open file.");
         return false;
     }
+    file.seekg(0, std::ios::end);
+
+    std::cout
+        << "After seekg()\n";
+
+    std::cout
+        << "tellg = "
+        << file.tellg()
+        << std::endl;
+
+    std::cout
+        << "good = "
+        << file.good()
+        << std::endl;
+
+    std::cout
+        << "fail = "
+        << file.fail()
+        << std::endl;
+    uint64_t fileSize =
+        static_cast<uint64_t>(file.tellg());
+
+    std::cout
+        << "File size = "
+        << fileSize
+        << std::endl;
+    file.seekg(0, std::ios::beg);
+
+    FileMetadata meta{};
+
+    std::string filename =
+        std::filesystem::path(filePath).filename().string();
+
+    std::strncpy(
+        meta.fileName,
+        filename.c_str(),
+        MAX_FILENAME_LENGTH - 1);
+
+    meta.fileName[MAX_FILENAME_LENGTH - 1] = '\0';
+
+
+    meta.fileSize = fileSize;
+    session.fileSize = fileSize;
+
+    auto metaPacket =
+        PacketBuilder::buildMetaPacket(
+            session.nextSeq,
+            meta);
+    if (!rdtSender.send(
+            metaPacket,
+            session.remoteIp,
+            session.remotePort))
+    {
+        log_error("Failed to send metadata.");
+
+        file.close();
+
+        return false;
+    }
+    log_info(
+        "Metadata sent. Name=" + std::string(meta.fileName) + " Size=" + std::to_string(meta.fileSize));
+
+    session.nextSeq++;
 
     log_info("Sending file : " + filePath);
     log_info("--------------------------------");
@@ -53,6 +121,36 @@ bool FileSender::sendFile(const std::string &filePath,
     while (true)
     {
         file.read(buffer, MAX_PAYLOAD_SIZE);
+
+        std::cout
+            << "tellg = "
+            << file.tellg()
+            << std::endl;
+
+        std::cout
+            << "gcount = "
+            << file.gcount()
+            << std::endl;
+
+        std::cout
+            << "good = "
+            << file.good()
+            << std::endl;
+
+        std::cout
+            << "eof = "
+            << file.eof()
+            << std::endl;
+
+        std::cout
+            << "fail = "
+            << file.fail()
+            << std::endl;
+
+        std::cout
+            << "bad = "
+            << file.bad()
+            << std::endl;
         if (file.bad())
         {
             log_error("Read file failed.");
@@ -127,12 +225,13 @@ void FileSender::printSummary() const
 
     log_info("Bytes : " + std::to_string(session.bytesTransferred));
 
-    log_info(
-        "Finished : " + std::string(session.finished ? "Yes" : "No"));
+    log_info("File Size : " + std::to_string(session.fileSize));
+
+    log_info("Finished : " + std::string(session.finished ? "Yes" : "No"));
 
     log_info("--------------------------------");
 }
-const TransferSession&
+const TransferSession &
 FileSender::getSession() const
 {
     return session;
