@@ -356,6 +356,53 @@ void handle_client_command(SOCKET client_socket, ClientSession& session, const s
     (void)needsAuth; //dập cảnh báo của compiler khi biến chưa được sử dụng.
 }
 
+
+//ham de co the chay da luong
+void handdle_client_session(SOCKET client_socket){
+    log_info("New client connected");
+
+    ClientSession session;
+    session.controlSocketFd = static_cast<int>(client_socket);
+
+    send_reply(client_socket, FTPStatus::OK_220);
+
+    std::string recv_buffer = "";
+    char buffer[BUFFER_SIZE];
+    bool is_quit = false;
+
+    while(!is_quit){
+        int bytes_read = recv(client_socket, buffer, BUFFER_SIZE - 1, 0);
+        if (bytes_read <= 0){
+            log_info("Client disconnected");
+            break;
+        }
+
+        buffer[bytes_read] = '\0';
+        recv_buffer.append(buffer, bytes_read);
+
+        size_t pos;
+        while ((pos = recv_buffer.find('\n')) != std::string::npos) {
+            std::string command_line = recv_buffer.substr(0, pos);
+            recv_buffer.erase(0, pos + 1);
+            if (!command_line.empty() && (command_line.back() == '\r' || command_line.back() == ' ' || command_line.back() == '\t')){
+                command_line.pop_back();
+            }
+
+
+            if (!command_line.empty()) {
+                handle_client_command(client_socket, session, command_line);
+
+                if (command_line.rfind("QUIT", 0) == 0){
+                    is_quit = true;
+                    break;
+                }
+            }
+        } 
+    }
+    closesocket(client_socket);
+    log_info("Closed client connection.");
+
+}
 int main()
 {
     init_sockets();
@@ -416,65 +463,63 @@ int main()
 
         log_info("New client connected!");
 
-        ClientSession session;
-        session.controlSocketFd = static_cast<int>(client_socket);
+        // ClientSession session;
+        // session.controlSocketFd = static_cast<int>(client_socket);
 
-        // Gửi thông báo sẵn sàng tới Client: 220 service ready
-        send_reply(client_socket, FTPStatus::OK_220);
+        // // Gửi thông báo sẵn sàng tới Client: 220 service ready
+        // send_reply(client_socket, FTPStatus::OK_220);
 
-        std::string recv_buffer = ""; // Bộ đệm tích lũy sống suốt phiên kết nối
-        char buffer[BUFFER_SIZE];
-        bool is_quit = false;
+        // std::string recv_buffer = ""; // Bộ đệm tích lũy sống suốt phiên kết nối
+        // char buffer[BUFFER_SIZE];
+        // bool is_quit = false;
 
-        // Vòng lặp nhận dữ liệu từ Client hiện tại
-        while (!is_quit)
-        {
-            int bytes_read = recv(client_socket, buffer, BUFFER_SIZE - 1, 0);
+        // // Vòng lặp nhận dữ liệu từ Client hiện tại
+        // while (!is_quit)
+        // {
+        //     int bytes_read = recv(client_socket, buffer, BUFFER_SIZE - 1, 0);
 
-            if (bytes_read <= 0)
-            {
-                log_info("Client disconnected.");
-                break;
-            }
+        //     if (bytes_read <= 0)
+        //     {
+        //         log_info("Client disconnected.");
+        //         break;
+        //     }
 
-            // 1. Nối dữ liệu vừa đọc được vào bộ đệm tích lũy
-            buffer[bytes_read] = '\0';
-            recv_buffer.append(buffer, bytes_read);
+        //     // 1. Nối dữ liệu vừa đọc được vào bộ đệm tích lũy
+        //     buffer[bytes_read] = '\0';
+        //     recv_buffer.append(buffer, bytes_read);
 
-            // 2. Tìm ký tự xuống dòng '\n' trong bộ đệm
-            size_t pos;
-            while ((pos = recv_buffer.find('\n')) != std::string::npos)
-            {
-                // Tách lấy đúng 1 dòng lệnh hoàn chỉnh
-                std::string command_line = recv_buffer.substr(0, pos);
+        //     // 2. Tìm ký tự xuống dòng '\n' trong bộ đệm
+        //     size_t pos;
+        //     while ((pos = recv_buffer.find('\n')) != std::string::npos)
+        //     {
+        //         // Tách lấy đúng 1 dòng lệnh hoàn chỉnh
+        //         std::string command_line = recv_buffer.substr(0, pos);
 
-                // Xóa dòng lệnh vừa lấy ra khỏi bộ đệm
-                recv_buffer.erase(0, pos + 1);
+        //         // Xóa dòng lệnh vừa lấy ra khỏi bộ đệm
+        //         recv_buffer.erase(0, pos + 1);
 
-                // Lọc bỏ ký tự '\r' nếu client gửi theo chuẩn Telnet/FTP (\r\n)
-                if (!command_line.empty() && command_line.back() == '\r')
-                {
-                    command_line.pop_back();
-                }
+        //         // Lọc bỏ ký tự '\r' nếu client gửi theo chuẩn Telnet/FTP (\r\n)
+        //         if (!command_line.empty() && command_line.back() == '\r')
+        //         {
+        //             command_line.pop_back();
+        //         }
 
-                // Nếu dòng không rỗng thì mới mang đi xử lý
-                if (!command_line.empty())
-                {
-                    handle_client_command(client_socket, session, command_line);
+        //         // Nếu dòng không rỗng thì mới mang đi xử lý
+        //         if (!command_line.empty())
+        //         {
+        //             handle_client_command(client_socket, session, command_line);
 
-                    // Kiểm tra lệnh QUIT
-                    if (command_line.rfind("QUIT", 0) == 0)
-                    {
-                        is_quit = true;
-                        break;
-                    }
-                }
-            }
-        } // Kết thúc vòng lặp xử lý 1 Client
+        //             // Kiểm tra lệnh QUIT
+        //             if (command_line.rfind("QUIT", 0) == 0)
+        //             {
+        //                 is_quit = true;
+        //                 break;
+        //             }
+        //         }
+        //     }
+        // } // Kết thúc vòng lặp xử lý 1 Client
 
-        // Đóng kết nối với Client hiện tại SAU KHỊ Client ngắt hoặc QUIT
-        closesocket(client_socket);
-        log_info("Closed client connection.");
+        std::thread(handdle_client_session, client_socket).detach();
     } // Kết thúc vòng lặp accept (Server tiếp tục chờ Client tiếp theo)
 
     // Đóng Server socket khi dừng Server
