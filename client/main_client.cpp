@@ -1,8 +1,45 @@
 #include <iostream>
+#include <cstring>
 #include <string>
-#include <sstream>
+#include <filesystem>
+#include <optional>
+#include <random>
+#include <thread>     
+#include <vector>
+#include <sstream>                                    
+#include "../common/logger.h"
 #include "../common/protocol.h"
-#include "../common/rdt_packet.h" // Thư viện RDT của đồng đội
+
+// Khai báo thư viện Socket tương thích cả Windows và Linux
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#pragma comment(lib, "ws2_32.lib")
+typedef int socklen_t;
+#else
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <unistd.h>
+typedef int SOCKET;
+#define INVALID_SOCKET -1
+#define SOCKET_ERROR -1
+#define closesocket close
+#endif
+
+#define BUFFER_SIZE 1024
+
+void init_sockets() {
+#ifdef _WIN32
+    WSADATA wsaData;
+    WSAStartup(MAKEWORD(2, 2), &wsaData);
+#endif
+}
+
+void cleanup_socket() {
+#ifdef _WIN32
+    WSACleanup();
+#endif
+}
 
 // Hàm bóc tách IP và Port từ phản hồi 227 của PASV
 bool parsePasvResponse(const std::string& response, std::string& outIp, int& outPort) {
