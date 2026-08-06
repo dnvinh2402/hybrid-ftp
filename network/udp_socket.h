@@ -45,6 +45,7 @@ public:
                        unsigned short &senderPort);
 
     void close();
+    bool setReceiveTimeout(int milliseconds);
 };
 
 #endif

@@ -1,7 +1,7 @@
 #include "../network/udp_socket.h"
 #include "../common/logger.h"
 #include "../common/rdt_packet.h"
-
+#include "../network/packet_builder.h"
 #include <iostream>
 #include <cstring>
 
@@ -34,6 +34,7 @@ int main(int argc, char *argv[])
     if (mode == "server")
     {
         udp.bind(3000);
+        udp.setReceiveTimeout(1000);
 
         RDTPacket pkt;
 
@@ -56,19 +57,11 @@ int main(int argc, char *argv[])
     }
     else
     {
-        RDTPacket pkt{};
-
-        pkt.header.seq_num = 1;
-
-        pkt.header.ack_num = 0;
-
-        pkt.header.flags = RDTFlag::DATA;
-
-        strcpy(pkt.payload, "Hello UDP");
-
-        pkt.header.payload_len = strlen(pkt.payload);
-
-        fillChecksum(pkt);
+        auto pkt =
+            PacketBuilder::buildDataPacket(
+                0,
+                "Hello",
+                5);
 
         udp.sendPacket(pkt, "127.0.0.1", 3000);
     }

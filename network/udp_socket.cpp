@@ -146,3 +146,43 @@ bool UDPSocket::sendPacket(const RDTPacket& packet,
 
     return true;
 }
+bool UDPSocket::setReceiveTimeout(int milliseconds)
+{
+#ifdef _WIN32
+
+    DWORD timeout = milliseconds;
+
+    if (setsockopt(
+            socketFd,
+            SOL_SOCKET,
+            SO_RCVTIMEO,
+            reinterpret_cast<const char*>(&timeout),
+            sizeof(timeout))
+        == SOCKET_ERROR)
+    {
+        log_error("Failed to set receive timeout.");
+        return false;
+    }
+
+#else
+
+    timeval tv;
+    tv.tv_sec = milliseconds / 1000;
+    tv.tv_usec = (milliseconds % 1000) * 1000;
+
+    if (setsockopt(
+            socketFd,
+            SOL_SOCKET,
+            SO_RCVTIMEO,
+            &tv,
+            sizeof(tv))
+        == SOCKET_ERROR)
+    {
+        log_error("Failed to set receive timeout.");
+        return false;
+    }
+
+#endif
+
+    return true;
+}
