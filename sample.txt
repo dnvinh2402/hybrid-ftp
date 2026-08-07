@@ -7,7 +7,7 @@ cmake --build build
 
 .\build\test_retransmission.exe client
 .\build\test_retransmission.exe server
-
+192.168.1.13
 .\build\test_checksum.exe
 
 .\build\test_file_sender.exe

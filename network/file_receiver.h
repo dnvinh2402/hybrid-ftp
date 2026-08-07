@@ -22,7 +22,7 @@ private:
 public:
     explicit FileReceiver(RDTReceiver &receiver);
 
-    bool receiveFile();
+    bool receiveFile(const std::string& saveDirectory);
     const TransferSession& getSession() const;
 };
 

@@ -105,6 +105,22 @@ add_executable(test_packet_parser
     network/packet_builder.cpp
     network/packet_parser.cpp
 )
+add_executable(test_lan_transfer
+    tests/test_lan_transfer.cpp
+
+    network/data_channel.cpp
+
+    network/file_sender.cpp
+    network/file_receiver.cpp
+
+    network/rdt_sender.cpp
+    network/rdt_receiver.cpp
+
+    network/udp_socket.cpp
+
+    network/packet_builder.cpp
+    network/packet_parser.cpp
+)
 if (WIN32)
     target_link_libraries(ftp_server ws2_32)
     target_link_libraries(ftp_client ws2_32)
@@ -120,4 +136,5 @@ if (WIN32)
     target_link_libraries(test_transfer_session ws2_32)
     target_link_libraries(test_data_channel_transfer ws2_32)
     target_link_libraries(test_packet_parser ws2_32)
+    target_link_libraries(test_lan_transfer ws2_32)
 endif()

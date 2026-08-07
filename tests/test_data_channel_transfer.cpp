@@ -23,7 +23,7 @@ int main(int argc,char* argv[])
 
         channel.open(config);
 
-        channel.receiveFile();
+        channel.receiveFile("server_files");
 
         channel.close();
     }

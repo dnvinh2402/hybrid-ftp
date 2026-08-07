@@ -25,7 +25,7 @@ public:
                   const std::string &ip,
                   unsigned short port);
 
-    bool receiveFile();
+    bool receiveFile(const std::string& saveDirectory);
     bool isOpened() const;
     DataChannel(const DataChannel &) = delete;
 

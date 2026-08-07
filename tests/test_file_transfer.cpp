@@ -42,7 +42,7 @@ int main(int argc,char* argv[])
         FileReceiver fr(receiver);
 
         // fr.receiveFile("received.png");
-        fr.receiveFile();
+        fr.receiveFile("server_files");
         // fr.receiveFile("received.pdf");
     }
     else
