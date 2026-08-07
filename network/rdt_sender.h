@@ -8,14 +8,17 @@ struct RDTPacket;
 class RDTSender
 {
 public:
+    explicit RDTSender(UDPSocket &socket);
 
-    explicit RDTSender(UDPSocket& socket);
-
-    bool send(const RDTPacket& packet,
-              const std::string& ip,
+    bool send(const RDTPacket &packet,
+              const std::string &ip,
               unsigned short port);
+
 private:
     static constexpr int MAX_RETRY = 5;
-    UDPSocket& udp;
-    bool waitAck(uint32_t seq);
+    UDPSocket &udp;
+    bool waitAck(
+        uint32_t seq,
+        const std::string &expectedIp,
+        unsigned short expectedPort);
 };

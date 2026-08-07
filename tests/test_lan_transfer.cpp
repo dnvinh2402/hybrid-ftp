@@ -33,6 +33,8 @@ int main(int argc,char* argv[])
         std::cout<<"Waiting file...\n";
 
         channel.receiveFile("server_files");
+        channel.receiveFile("server_files");
+        channel.receiveFile("server_files");
 
         channel.close();
     }
@@ -54,6 +56,14 @@ int main(int argc,char* argv[])
 
         channel.sendFile(
             "client_files/Singleton.pdf",
+            argv[2],
+            5000);
+        channel.sendFile(
+            "client_files/picture.png",
+            argv[2],
+            5000);
+        channel.sendFile(
+            "client_files/file5MB.pdf",
             argv[2],
             5000);
 

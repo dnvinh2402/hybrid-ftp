@@ -4,10 +4,13 @@ This is my first file.
 
 cmake -S . -B build
 cmake --build build
+ipconfig
 
+.\build\test_lan_transfer.exe 
 .\build\test_retransmission.exe client
 .\build\test_retransmission.exe server
 192.168.1.13
+10.120.2.122
 .\build\test_checksum.exe
 
 .\build\test_file_sender.exe

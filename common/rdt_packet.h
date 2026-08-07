@@ -78,15 +78,24 @@ inline void fillChecksum(RDTPacket &pkt)
 // Kiem tra 1 packet nhan duoc co bi corrupt khong.
 inline bool verifyChecksum(const RDTPacket &pkt)
 {
+    if (pkt.header.payload_len > MAX_PAYLOAD_SIZE)
+        return false;
+
     RDTHeader tmpHeader = pkt.header;
+
     uint16_t received = tmpHeader.checksum;
+
     tmpHeader.checksum = 0;
 
     static thread_local uint8_t buf[RDT_HEADER_SIZE + MAX_PAYLOAD_SIZE];
+
     std::memcpy(buf, &tmpHeader, RDT_HEADER_SIZE);
+
     std::memcpy(buf + RDT_HEADER_SIZE, pkt.payload, pkt.header.payload_len);
 
-    return computeChecksum(buf, RDT_HEADER_SIZE + pkt.header.payload_len) == received;
+    uint16_t calculated = computeChecksum(buf, RDT_HEADER_SIZE + pkt.header.payload_len);
+
+    return calculated == received;
 }
 
 // Chi gui dung so byte thuc su dang dung (header + payload_len), thay vi
@@ -106,18 +115,30 @@ inline size_t packForSend(const RDTPacket &pkt, uint8_t *outBuf, size_t outBufCa
 // Tra ve false neu du lieu qua ngan hoac payload_len vuot qua MAX_PAYLOAD_SIZE.
 inline bool unpackFromRecv(const uint8_t *data, size_t len, RDTPacket &out)
 {
+    if (data == nullptr)
+        return false;
+
     if (len < RDT_HEADER_SIZE)
         return false;
+
     std::memcpy(&out.header, data, RDT_HEADER_SIZE);
-    if (out.header.payload_len > MAX_PAYLOAD_SIZE)
-        return false;
-    if (len < RDT_HEADER_SIZE + out.header.payload_len)
-        return false;
-    std::memcpy(out.payload, data + RDT_HEADER_SIZE, out.header.payload_len);
+
     if (out.header.version != RDT_VERSION)
         return false;
+
     if (out.header.magic != RDT_MAGIC)
         return false;
+
+    if (out.header.payload_len > MAX_PAYLOAD_SIZE)
+        return false;
+
+    const size_t expectedSize = RDT_HEADER_SIZE + out.header.payload_len;
+
+    if (len != expectedSize)
+        return false;
+
+    std::memcpy(out.payload, data + RDT_HEADER_SIZE, out.header.payload_len);
+
     return true;
 }
 #endif

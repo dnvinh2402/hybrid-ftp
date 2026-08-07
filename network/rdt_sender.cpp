@@ -22,7 +22,10 @@ bool RDTSender::send(const RDTPacket &packet,
             return false;
         }
 
-        if (waitAck(packet.header.seq_num))
+        if (waitAck(
+                packet.header.seq_num,
+                ip,
+                port))
         {
             log_info("ACK received.");
             return true;
@@ -35,45 +38,65 @@ bool RDTSender::send(const RDTPacket &packet,
 
     return false;
 }
-bool RDTSender::waitAck(uint32_t seq)
+bool RDTSender::waitAck(
+    uint32_t seq,
+    const std::string& expectedIp,
+    unsigned short expectedPort)
 {
-    RDTPacket ack;
+    while (true)
+    {
+        RDTPacket ack;
 
-    std::string ip;
+        std::string ip;
+        unsigned short port;
 
-    unsigned short port;
+        if (!udp.receivePacket(ack, ip, port))
+        {
+            log_error("Timeout waiting ACK.");
+            return false;
+        }
 
-    if (!udp.receivePacket(ack, ip, port))
-    {
-        log_error("Timeout waiting ACK.");
-        return false;
-    }
-    if (!verifyChecksum(ack))
-    {
-        log_error("ACK checksum error.");
-        return false;
-    }
+        if (ip != expectedIp || port != expectedPort)
+        {
+            log_info("Ignoring ACK from unexpected endpoint.");
+            continue;
+        }
 
-    if (!(ack.header.flags & RDTFlag::ACK))
-    {
-        log_error("Not an ACK packet.");
-        return false;
-    }
-    if (ack.header.ack_num != seq)
-    {
-        log_error("Unexpected ACK.");
-        return false;
-    }
-    if (ack.header.version != RDT_VERSION)
-    {
-        log_error("Protocol version mismatch.");
-        return false;
-    }
+        if (!verifyChecksum(ack))
+        {
+            log_error("ACK checksum error.");
+            continue;
+        }
 
-    if (ack.header.magic != RDT_MAGIC)
-    {
-        log_error("Invalid protocol.");
-        return false;
+        if (ack.header.version != RDT_VERSION)
+        {
+            log_error("Protocol version mismatch.");
+            continue;
+        }
+
+        if (ack.header.magic != RDT_MAGIC)
+        {
+            log_error("Invalid protocol.");
+            continue;
+        }
+
+        if (!(ack.header.flags & RDTFlag::ACK))
+        {
+            log_info("Ignoring non-ACK packet.");
+            continue;
+        }
+
+        if (ack.header.ack_num != seq)
+        {
+            log_info(
+                "Ignoring ACK " +
+                std::to_string(ack.header.ack_num) +
+                ", waiting for ACK " +
+                std::to_string(seq));
+
+            continue;
+        }
+
+        return true;
     }
-    return true;
 }

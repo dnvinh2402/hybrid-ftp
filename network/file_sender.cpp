@@ -20,6 +20,12 @@ bool FileSender::sendFile(const std::string &filePath,
     session.fileName = filePath;
 
     std::ifstream file(filePath, std::ios::binary);
+
+    if (!file.is_open())
+    {
+        log_error("Cannot open file.");
+        return false;
+    }
     file.seekg(0, std::ios::end);
 
     std::cout
@@ -33,11 +39,6 @@ bool FileSender::sendFile(const std::string &filePath,
         << "\nfail = " << file.fail()
         << "\nbad = " << file.bad()
         << "\n";
-    if (!file.is_open())
-    {
-        log_error("Cannot open file.");
-        return false;
-    }
     file.seekg(0, std::ios::end);
 
     std::cout
@@ -77,7 +78,6 @@ bool FileSender::sendFile(const std::string &filePath,
         MAX_FILENAME_LENGTH - 1);
 
     meta.fileName[MAX_FILENAME_LENGTH - 1] = '\0';
-
 
     meta.fileSize = fileSize;
     session.fileSize = fileSize;

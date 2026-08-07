@@ -2,6 +2,12 @@
 
 #include <cstring>
 
+#include "../common/rdt_packet.h"
+
+static_assert(
+    sizeof(FileMetadata) <= MAX_PAYLOAD_SIZE,
+    "Metadata too large.");
+
 RDTPacket PacketBuilder::buildDataPacket(
     uint32_t seq,
     const char *data,
@@ -9,89 +15,98 @@ RDTPacket PacketBuilder::buildDataPacket(
 {
     RDTPacket pkt{};
 
-    pkt.header.seq_num = seq;
+    if (data == nullptr)
+    {
+        return pkt;
+    }
 
+    if (length > MAX_PAYLOAD_SIZE)
+    {
+        return pkt;
+    }
+
+    pkt.header.version = RDT_VERSION;
+    pkt.header.magic = RDT_MAGIC;
+
+    pkt.header.seq_num = seq;
     pkt.header.ack_num = 0;
 
     pkt.header.flags = RDTFlag::DATA;
 
     pkt.header.payload_len = length;
-    pkt.header.version = RDT_VERSION;
-    pkt.header.magic = RDT_MAGIC;
 
-    memcpy(pkt.payload, data, length);
+    std::memcpy(
+        pkt.payload,
+        data,
+        length);
 
     fillChecksum(pkt);
 
     return pkt;
 }
-// ACK
-RDTPacket PacketBuilder::buildAckPacket(uint32_t ack)
+
+RDTPacket PacketBuilder::buildAckPacket(
+    uint32_t ack)
 {
     RDTPacket pkt{};
 
-    pkt.header.flags = RDTFlag::ACK;
+    pkt.header.version = RDT_VERSION;
+    pkt.header.magic = RDT_MAGIC;
 
+    pkt.header.seq_num = 0;
     pkt.header.ack_num = ack;
 
+    pkt.header.flags = RDTFlag::ACK;
     pkt.header.payload_len = 0;
-
-    pkt.header.version = RDT_VERSION;
-
-    pkt.header.magic = RDT_MAGIC;
 
     fillChecksum(pkt);
 
     return pkt;
 }
-// fin
-RDTPacket PacketBuilder::buildFinPacket(uint32_t seq)
+
+RDTPacket PacketBuilder::buildFinPacket(
+    uint32_t seq)
 {
     RDTPacket pkt{};
 
-    pkt.header.seq_num = seq;
+    pkt.header.version = RDT_VERSION;
+    pkt.header.magic = RDT_MAGIC;
 
+    pkt.header.seq_num = seq;
     pkt.header.ack_num = 0;
 
     pkt.header.flags = RDTFlag::FIN;
-
     pkt.header.payload_len = 0;
-
-    pkt.header.version = RDT_VERSION;
-
-    pkt.header.magic = RDT_MAGIC;
 
     fillChecksum(pkt);
 
     return pkt;
 }
-// build meta packet
-static_assert(
-        sizeof(FileMetadata) <= MAX_PAYLOAD_SIZE,
-        "Metadata too large.");
-RDTPacket PacketBuilder::buildMetaPacket(uint32_t seq, const FileMetadata &meta)
-{
 
+RDTPacket PacketBuilder::buildMetaPacket(
+    uint32_t seq,
+    const FileMetadata &meta)
+{
     RDTPacket pkt{};
 
     pkt.header.version = RDT_VERSION;
-
     pkt.header.magic = RDT_MAGIC;
 
     pkt.header.seq_num = seq;
-
     pkt.header.ack_num = 0;
 
     pkt.header.flags = RDTFlag::META;
+
+    pkt.header.payload_len =
+        static_cast<uint16_t>(
+            sizeof(FileMetadata));
 
     std::memcpy(
         pkt.payload,
         &meta,
         sizeof(FileMetadata));
 
-    pkt.header.payload_len =
-        sizeof(FileMetadata);
-
     fillChecksum(pkt);
+
     return pkt;
 }

@@ -13,6 +13,7 @@ void FileReceiver::resetSession()
 bool FileReceiver::receiveFile(const std::string &saveDirectory)
 {
     resetSession();
+    rdtReceiver.reset();
     FileMetadata metadata{};
 
     bool metadataReceived = false;
