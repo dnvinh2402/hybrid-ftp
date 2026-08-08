@@ -2,7 +2,7 @@
 #define FILE_METADATA_H
 
 #include <cstdint>
-
+#include <cstddef>
 constexpr size_t MAX_FILENAME_LENGTH = 256;
 
 struct FileMetadata

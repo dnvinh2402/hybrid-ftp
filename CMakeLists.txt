@@ -7,7 +7,21 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 include_directories(common)
 
 # Build Executable cho Server
-add_executable(ftp_server server/main_server.cpp)
+add_executable(ftp_server
+    server/main_server.cpp
+    network/data_channel.cpp
+    network/file_sender.cpp
+    network/file_receiver.cpp
+    network/rdt_sender.cpp
+    network/rdt_receiver.cpp
+    network/udp_socket.cpp
+    network/packet_builder.cpp
+    network/packet_parser.cpp
+)
+
+find_package(Threads REQUIRED)
+target_link_libraries(ftp_server PRIVATE Threads::Threads)
+
 
 # Build Executable cho Client
 add_executable(ftp_client client/main_client.cpp)
