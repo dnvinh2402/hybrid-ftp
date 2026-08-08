@@ -17,7 +17,9 @@ public:
 
     static RDTPacket buildFinPacket(uint32_t seq);
 
-        static RDTPacket buildMetaPacket(
+    static RDTPacket buildMetaPacket(
             uint32_t seq,
             const FileMetadata &meta);
+
+    static RDTPacket buildSynPacket(uint32_t seq);
 };

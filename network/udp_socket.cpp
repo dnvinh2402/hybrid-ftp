@@ -34,7 +34,11 @@ void UDPSocket::close()
 {
     if (socketFd != INVALID_SOCKET)
     {
+#ifdef _WIN32
         closesocket(socketFd);
+#else
+        ::close(socketFd);
+#endif
         socketFd = INVALID_SOCKET;
 
         log_info("UDP socket closed.");

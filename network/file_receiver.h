@@ -6,7 +6,7 @@
 #include "rdt_receiver.h"
 #include "../common/logger.h"
 #include "../common/rdt_packet.h"
-#include "file_metadata.h"
+#include "../common/file_metadata.h"
 #include "packet_parser.h"
 class RDTReceiver;
 
@@ -17,7 +17,7 @@ private:
     TransferSession session;
     void resetSession();
     void printSummary() const;
-    bool isUnexpectedSequence(const RDTPacket& packet);
+    static constexpr int MAX_CONSECUTIVE_TIMEOUTS = 10; // so lan timeout lientiep toi da cho phep
 
 public:
     explicit FileReceiver(RDTReceiver &receiver);

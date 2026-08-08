@@ -19,6 +19,8 @@ bool FileReceiver::receiveFile()
 
     std::ofstream file;
 
+    int consecutiveTimeouts = 0;
+
     while (!session.finished)
     {
         RDTPacket packet;
@@ -27,8 +29,21 @@ bool FileReceiver::receiveFile()
 
         unsigned short port;
 
-        if (!rdtReceiver.receive(packet, ip, port))
+        if (!rdtReceiver.receive(packet, ip, port)) {
+            consecutiveTimeouts++;
+            log_error(
+                "Receive timeout (" + std::to_string(consecutiveTimeouts) +
+                "/" + std::to_string(MAX_CONSECUTIVE_TIMEOUTS) + ").");
+ 
+            if (consecutiveTimeouts >= MAX_CONSECUTIVE_TIMEOUTS)
+            {
+                log_error("Sender unresponsive. Aborting transfer.");
+                if (file.is_open()) file.close();
+                return false;
+            }
             continue;
+        }
+        consecutiveTimeouts = 0;
 
         bool isMeta =
             PacketParser::parseMetadata(
@@ -54,6 +69,7 @@ bool FileReceiver::receiveFile()
 
             return false;
         }
+
 
         session.remoteIp = ip;
         session.remotePort = port;

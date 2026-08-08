@@ -69,6 +69,7 @@ RDTPacket PacketBuilder::buildFinPacket(uint32_t seq)
 static_assert(
         sizeof(FileMetadata) <= MAX_PAYLOAD_SIZE,
         "Metadata too large.");
+
 RDTPacket PacketBuilder::buildMetaPacket(uint32_t seq, const FileMetadata &meta)
 {
 
@@ -92,6 +93,19 @@ RDTPacket PacketBuilder::buildMetaPacket(uint32_t seq, const FileMetadata &meta)
     pkt.header.payload_len =
         sizeof(FileMetadata);
 
+    fillChecksum(pkt);
+    return pkt;
+}
+
+RDTPacket PacketBuilder::buildSynPacket(uint32_t seq)
+{
+    RDTPacket pkt{};
+    pkt.header.seq_num = seq;
+    pkt.header.ack_num = 0;
+    pkt.header.flags = RDTFlag::SYN;
+    pkt.header.payload_len = 0;
+    pkt.header.version = RDT_VERSION;
+    pkt.header.magic = RDT_MAGIC;
     fillChecksum(pkt);
     return pkt;
 }

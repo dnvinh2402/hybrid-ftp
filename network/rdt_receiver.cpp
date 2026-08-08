@@ -4,8 +4,8 @@
 #include "../common/rdt_packet.h"
 #include "../common/logger.h"
 
-RDTReceiver::RDTReceiver(UDPSocket &socket)
-    : udp(socket)
+RDTReceiver::RDTReceiver(UDPSocket &socket, bool simulateAckLoss)
+    : udp(socket), simulateAckLoss(simulateAckLoss)
 {
 }
 
@@ -13,8 +13,8 @@ bool RDTReceiver::receive(RDTPacket &packet,
                           std::string &senderIp,
                           unsigned short &senderPort)
 {
-    static bool firstPacket = true;
-    static int receiveCount = 0;
+    // static bool firstPacket = true;
+    // static int receiveCount = 0;
 
     if (!udp.receivePacket(packet, senderIp, senderPort))
         return false;
@@ -30,17 +30,27 @@ bool RDTReceiver::receive(RDTPacket &packet,
         return false;
     }
 
-    // --------- Chỉ dùng để TEST Retransmission ---------
-    if (firstPacket)
+    // // --------- Chỉ dùng để TEST Retransmission ---------
+    // if (firstPacket)
+    // {
+    //     firstPacket = false;
+
+    //     log_info("Simulate ACK loss (Do not send ACK)");
+
+    //     // Không gửi ACK
+    //     return true;
+    // }
+    // // ---------------------------------------------------
+
+    if (simulateAckLoss && firstPacketOfSession)
     {
-        firstPacket = false;
-
-        log_info("Simulate ACK loss (Do not send ACK)");
-
-        // Không gửi ACK
-        return true;
+        firstPacketOfSession = false;
+ 
+        log_info("[TEST] Simulate ACK loss for first packet (config.simulateAckLoss=true).");
+ 
+        return true; // KHÔNG gửi ACK, để test cơ chế retransmit bên sender
     }
-    // ---------------------------------------------------
+
     if (sendAck(packet.header.seq_num, senderIp, senderPort))
     {
         log_info("ACK sent successfully.");
