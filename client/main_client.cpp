@@ -57,18 +57,45 @@ int activePort = 0;
 // trước: substr(0, pos) KHÔNG lấy kèm ký tự '\n' -- bản cũ lấy dư '\n' vào
 // out_line khiến bước "xóa \r cuối dòng" bên dưới không bao giờ khớp,
 // vì back() lúc đó luôn là '\n' chứ không phải '\r'.
-bool receive_reply(SOCKET socket, std::string &recv_buffer, std::string& out_line) {
-    size_t pos;
-    while ((pos = recv_buffer.find('\n')) == std::string::npos) {
-        char buffer[BUFFER_SIZE];
-        int bytes_read = recv(socket, buffer, BUFFER_SIZE - 1, 0);
-        if (bytes_read <= 0) return false;
+bool receive_reply(SOCKET sock, std::string& recv_buffer, std::string& reply) {
+    reply.clear();
+    char buffer[1024];
+    std::string multiLineCode = ""; // Lưu mã 3 chữ số nếu gặp multi-line (ví dụ "214 ")
+
+    while (true) {
+        size_t pos;
+        while ((pos = recv_buffer.find('\n')) != std::string::npos) {
+            std::string line = recv_buffer.substr(0, pos);
+            recv_buffer.erase(0, pos + 1);
+            if (!line.empty() && line.back() == '\r') {
+                line.pop_back();
+            }
+
+            reply += line + "\r\n";
+
+            // Nếu chưa bật chế độ multi-line và dòng bắt đầu dạng "214-..."
+            if (multiLineCode.empty() && line.length() >= 4 && line[3] == '-') {
+                multiLineCode = line.substr(0, 3) + " "; // Chờ dòng kết thúc bắt đầu bằng "214 "
+            }
+
+            // Kết thúc khi:
+            // 1. Là phản hồi 1 dòng đơn (single-line)
+            // 2. Gặp đúng dòng cuối cùng của phản hồi multi-line
+            if (multiLineCode.empty()) {
+                return true;
+            } else if (line.length() >= 4 && line.compare(0, 4, multiLineCode) == 0) {
+                return true;
+            }
+        }
+
+        // Nếu buffer chưa đủ 1 dòng hoàn chỉnh, đọc thêm từ Socket
+        int bytes_read = recv(sock, buffer, sizeof(buffer) - 1, 0);
+        if (bytes_read <= 0) {
+            return false;
+        }
+        buffer[bytes_read] = '\0';
         recv_buffer.append(buffer, bytes_read);
     }
-    out_line = recv_buffer.substr(0, pos); // KHÔNG lấy kèm '\n'
-    recv_buffer.erase(0, pos + 1);
-    if (!out_line.empty() && out_line.back() == '\r') out_line.pop_back();
-    return true;
 }
 
 // Gửi 1 lệnh FTP qua TCP rồi chờ đúng 1 dòng reply, in ra và trả về cho
