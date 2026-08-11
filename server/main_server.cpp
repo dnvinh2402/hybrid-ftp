@@ -11,7 +11,6 @@
 #include "../network/data_channel.h"
 #include "../network/data_channel_config.h"
 
-// Khai báo thư viện Socket tương thích cả Windows và Linux
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -62,13 +61,6 @@ void send_reply(SOCKET client_socket, const std::string &reply)
     log_debug("Sent reply: " + reply);
 }
 
-// ---------------------------------------------------------------------
-// resolveVirtualPath(): chuyển 1 đường dẫn "ảo" (client nhìn thấy, dạng
-// "/", "/photos", "../secret") thành đường dẫn THẬT trên đĩa, đồng thời
-// kiểm tra nó không vượt ra ngoài SERVER_ROOT.
-//
-// Trả về std::nullopt nếu đường dẫn không hợp lệ / cố gắng thoát ra ngoài.
-// ---------------------------------------------------------------------
 
 std::optional<fs::path> resolveVirtualPath(const ClientSession &session, const std::string &arg)
 {
@@ -151,7 +143,6 @@ void handle_client_command(SOCKET client_socket, ClientSession &session, DataCha
 
     switch (parsed.cmd)
     {
-    // ---------------- Nhóm đăng nhập (không đổi) ----------------
     case FtpCommand::USER:
     {
         session.username = parsed.arg;
@@ -367,7 +358,6 @@ void handle_client_command(SOCKET client_socket, ClientSession &session, DataCha
             break;
         }
 
-        // -------- Kênh dữ liệu: thoả thuận địa chỉ/port --------
         case FtpCommand::PORT:
         {
             std::string ip;
@@ -497,33 +487,6 @@ void handle_client_command(SOCKET client_socket, ClientSession &session, DataCha
 
         case FtpCommand::RETR:
         {
-            // if (session.dataMode == DataConnMode::NONE || !dataChannel.isOpened())
-            // {
-            //     send_reply(client_socket, FTPStatus::ERR_425);
-            //     break;
-            // }
-            // if (session.dataMode == DataConnMode::PASSIVE)
-            // {
-            //     // Xem ghi chú thiết kế: PASV chỉ cho server 1 port để NHẬN,
-            //     // chưa đủ thông tin để biết gửi RETR tới đâu bên client.
-            //     // Cần thêm bước bắt tay trước khi hỗ trợ tổ hợp này.
-            //     log_error("RETR via PASV not yet supported -- use PORT (active mode) instead.");
-            //     send_reply(client_socket, FTPStatus::ERR_425);
-            //     break;
-            // }
-
-            // auto target = resolveVirtualPath(session, parsed.arg);
-            // if (!target || !fs::is_regular_file(*target))
-            // {
-            //     send_reply(client_socket, FTPStatus::ERR_550);
-            //     break;
-            // }
-
-            // send_reply(client_socket, FTPStatus::OK_150);
-            // bool ok = dataChannel.sendFile(target->string(), session.dataIp,
-            //                                static_cast<unsigned short>(session.dataPort));
-            // send_reply(client_socket, ok ? FTPStatus::OK_226 : FTPStatus::ERR_426);
-            // break;
 
             if (session.dataMode == DataConnMode::NONE || !dataChannel.isOpened())
             {
@@ -625,7 +588,6 @@ void handle_client_command(SOCKET client_socket, ClientSession &session, DataCha
             break;
         }
 
-        // -------- Chưa cài: chưa yêu cầu trong bước này --------
         case FtpCommand::NLST:
         {
             if (session.dataMode == DataConnMode::NONE || !dataChannel.isOpened())
@@ -699,9 +661,6 @@ void handle_client_command(SOCKET client_socket, ClientSession &session, DataCha
                 break;
             }
 
-            // STOU: theo RFC 959, server TỰ SINH tên file duy nhất, KHÔNG
-            // dùng nguyên tên client gợi ý -- chỉ giữ lại phần đuôi mở
-            // rộng (nếu có) để file vẫn nhận diện được loại nội dung.
             std::string ext = parsed.arg.empty() ? "" : fs::path(parsed.arg).extension().string();
             auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                              std::chrono::system_clock::now().time_since_epoch())
@@ -735,8 +694,6 @@ void handle_client_command(SOCKET client_socket, ClientSession &session, DataCha
             }
 
             // Reply 226 kèm tên thật đã lưu -- client BẮT BUỘC phải đọc
-            // dòng này để biết tên file trên server (vì không phải tên
-            // nó tự đặt).
             send_reply(client_socket, "226 Transfer complete. Stored as \"" + uniqueName + "\".\r\n");
             break;
         }
@@ -773,8 +730,6 @@ void handle_client_command(SOCKET client_socket, ClientSession &session, DataCha
 
             if (fs::exists(*dest))
             {
-                // File đích đã tồn tại -> NỐI dữ liệu vừa nhận vào CUỐI
-                // file đó, thay vì ghi đè (đúng ngữ nghĩa APPE khác STOR).
                 std::ifstream src(receivedPath, std::ios::binary);
                 std::ofstream dst(*dest, std::ios::binary | std::ios::app);
                 dst << src.rdbuf();
