@@ -799,6 +799,127 @@ void handle_client_command(SOCKET client_socket, ClientSession &session, DataCha
             break;
         }
 
+        case FtpCommand::MDTM:
+        {
+            auto target = resolveVirtualPath(session, parsed.arg);
+            if (!target || !fs::is_regular_file(*target))
+            {
+                send_reply(client_socket, FTPStatus::ERR_550);
+            }
+            else
+            {
+                // Lấy thời gian sửa đổi cuối của file
+                std::error_code ec;
+                auto ftime = fs::last_write_time(*target, ec);
+                if (ec)
+                {
+                    send_reply(client_socket, FTPStatus::ERR_550);
+                    break;
+                }
+
+                auto s_time = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+                    ftime - fs::file_time_type::clock::now() + std::chrono::system_clock::now()
+                );
+                std::time_t tt = std::chrono::system_clock::to_time_t(s_time);
+                std::tm* gmt = std::gmtime(&tt);
+
+                char timeBuf[30];
+                std::strftime(timeBuf, sizeof(timeBuf), "%Y%m%d%H%M%S", gmt);
+                send_reply(client_socket, "213 " + std::string(timeBuf) + "\r\n");
+            }
+            break;
+        }
+
+        case FtpCommand::MODE:
+        {
+            std::string t = parsed.arg;
+            for (auto &c : t) c = toupper(c);
+
+            if (t == "S" || t.empty())
+            {
+                send_reply(client_socket, "200 Mode set to S.\r\n");
+            }
+            else
+            {
+                send_reply(client_socket, "504 Command not implemented for that parameter.\r\n");
+            }
+            break;
+        }
+
+        case FtpCommand::ABOR:
+        {
+            send_reply(client_socket, "225 ABOR command successful.\r\n");
+            break;
+        }
+
+        case FtpCommand::HELP:
+        {
+            std::string helpText = 
+                "214-The following commands are recognized:\r\n"
+                " USER PASS PWD CWD CDUP MKD RMD DELE RNFR RNTO\r\n"
+                " TYPE SIZE PORT PASV STOR RETR LIST NLST STOU APPE\r\n"
+                " MDTM MODE ABOR HELP HASH NOOP QUIT\r\n"
+                "214 Help OK.\r\n";
+            send_reply(client_socket, helpText);
+            break;
+        }
+
+        case FtpCommand::HASH:
+        {
+            send_reply(client_socket, "200 HASH command accepted.\r\n");
+            break;
+        }
+        case FtpCommand::STAT:
+        {
+            if (parsed.arg.empty())
+            {
+                // 1. STAT không tham số: Trả về trạng thái Session hiện tại
+                std::string dataModeStr = "NONE";
+                if (session.dataMode == DataConnMode::PASSIVE) dataModeStr = "PASSIVE";
+                else if (session.dataMode == DataConnMode::ACTIVE) dataModeStr = "ACTIVE";
+
+                std::string statusMsg = 
+                    "211- Hybrid FTP Server Status:\r\n"
+                    " Connected user: " + (session.username.empty() ? "Anonymous" : session.username) + "\r\n"
+                    " Current directory: " + session.currentDir + "\r\n"
+                    " Transfer Type: " + (session.type == TransferType::ASCII ? "ASCII" : "BINARY") + "\r\n"
+                    " Data Connection Mode: " + dataModeStr + "\r\n"
+                    "211 End of status.\r\n";
+                send_reply(client_socket, statusMsg);
+            }
+            else
+            {
+                // 2. STAT có tham số: Xem thông tin file/thư mục qua Control Socket
+                auto target = resolveVirtualPath(session, parsed.arg);
+                if (!target || !fs::exists(*target))
+                {
+                    send_reply(client_socket, FTPStatus::ERR_550);
+                }
+                else if (fs::is_regular_file(*target))
+                {
+                    std::error_code ec;
+                    auto sz = fs::file_size(*target, ec);
+                    std::string fileMsg = 
+                        "213- File status for " + parsed.arg + ":\r\n"
+                        " Size: " + std::to_string(sz) + " bytes\r\n"
+                        "213 End of status.\r\n";
+                    send_reply(client_socket, fileMsg);
+                }
+                else if (fs::is_directory(*target))
+                {
+                    std::string dirMsg = "212- Directory status for " + parsed.arg + ":\r\n";
+                    for (auto &entry : fs::directory_iterator(*target))
+                    {
+                        dirMsg += (entry.is_directory() ? "d " : "- ") + entry.path().filename().string() + "\r\n";
+                    }
+                    dirMsg += "212 End of status.\r\n";
+                    send_reply(client_socket, dirMsg);
+                }
+            }
+            break;
+        }
+
+
         default:
         {
             send_reply(client_socket, FTPStatus::ERR_500);
