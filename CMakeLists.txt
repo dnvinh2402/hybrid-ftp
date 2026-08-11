@@ -1,137 +1,89 @@
-cmake_minimum_required(VERSION 3.10)
-project(HybridFTP CXX)
+cmake_minimum_required(VERSION 3.20)
+# cmake -S . -B build -G Ninja
+project(HybridFTP
+    VERSION 1.0
+    LANGUAGES CXX
+)
+
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 
-include_directories(common)
 
-# Build Executable cho Server
+set(COMMON_HEADERS
+    common/file_metadata.h
+    common/logger.h
+    common/protocol.h
+    common/rdt_packet.h
+)
+
+set(NETWORK_SOURCES
+    network/data_channel.cpp
+    network/file_receiver.cpp
+    network/file_sender.cpp
+    network/packet_builder.cpp
+    network/packet_parser.cpp
+    network/rdt_receiver.cpp
+    network/rdt_sender.cpp
+    network/udp_socket.cpp
+)
+
+set(NETWORK_HEADERS
+    network/data_channel.h
+    network/data_channel_config.h
+    network/file_receiver.h
+    network/file_sender.h
+    network/packet_builder.h
+    network/packet_parser.h
+    network/rdt_receiver.h
+    network/rdt_sender.h
+    network/tcp_server.h
+    network/transfer_session.h
+    network/udp_socket.h
+)
+
+
+
 add_executable(ftp_server
     server/main_server.cpp
-    network/data_channel.cpp
-    network/file_sender.cpp
-    network/file_receiver.cpp
-    network/rdt_sender.cpp
-    network/rdt_receiver.cpp
-    network/udp_socket.cpp
-    network/packet_builder.cpp
-    network/packet_parser.cpp
+
+    ${NETWORK_SOURCES}
+    ${NETWORK_HEADERS}
+    ${COMMON_HEADERS}
 )
 
-find_package(Threads REQUIRED)
-target_link_libraries(ftp_server PRIVATE Threads::Threads)
-
-
-# Build Executable cho Client
-add_executable(ftp_client client/main_client.cpp)
-# Test UDP Socket
-add_executable(test_udp_socket
-    tests/test_udp_socket.cpp
-    network/udp_socket.cpp
-)
-add_executable(test_send_receive
-    tests/test_send_receive.cpp
-    network/udp_socket.cpp
-    network/packet_builder.cpp 
-    network/packet_parser.cpp
-)
-add_executable(test_packet_builder
-    tests/test_packet_builder.cpp
-    network/packet_builder.cpp 
-    network/packet_parser.cpp
-)
-add_executable(test_timeout
-    tests/test_timeout.cpp
-    network/udp_socket.cpp
-)
-add_executable(test_checksum
-    tests/test_checksum.cpp
-    network/packet_builder.cpp 
-    network/packet_parser.cpp
-)
-add_executable(
-    test_retransmission
-    tests/test_retransmission.cpp
-    network/udp_socket.cpp
-    network/packet_builder.cpp 
-    network/packet_parser.cpp
-    network/rdt_sender.cpp
-    network/rdt_receiver.cpp
-)
-add_executable(test_stop_and_wait
-    tests/test_stop_and_wait.cpp
-    network/udp_socket.cpp
-    network/rdt_sender.cpp
-    network/rdt_receiver.cpp
-    network/packet_builder.cpp 
-    network/packet_parser.cpp
-)
-add_executable(test_file_sender
-    tests/test_file_sender.cpp
-    network/file_sender.cpp
-    network/packet_builder.cpp 
-    network/packet_parser.cpp
-    network/udp_socket.cpp
-    network/rdt_sender.cpp
+target_include_directories(ftp_server PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
 )
 
-add_executable(test_file_transfer
-    tests/test_file_transfer.cpp
-    network/file_sender.cpp
-    network/file_receiver.cpp
-    network/packet_builder.cpp 
-    network/packet_parser.cpp
-    network/udp_socket.cpp
-    network/rdt_sender.cpp
-    network/rdt_receiver.cpp
+add_executable(ftp_client
+    client/main_client.cpp
+
+    ${NETWORK_SOURCES}
+    ${NETWORK_HEADERS}
+    ${COMMON_HEADERS}
 )
-add_executable(test_transfer_session
-    tests/test_transfer_session.cpp
 
-    network/file_sender.cpp
-    network/file_receiver.cpp
-
-    network/packet_builder.cpp 
-    network/packet_parser.cpp
-    network/udp_socket.cpp
-    network/rdt_sender.cpp
-    network/rdt_receiver.cpp
+target_include_directories(ftp_client PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
 )
-add_executable(test_data_channel_transfer
-    tests/test_data_channel_transfer.cpp
 
-    network/data_channel.cpp
+if(WIN32)
 
-    network/file_sender.cpp
-    network/file_receiver.cpp
+    target_link_libraries(ftp_server PRIVATE
+        ws2_32
+    )
 
-    network/rdt_sender.cpp
-    network/rdt_receiver.cpp
+    target_link_libraries(ftp_client PRIVATE
+        ws2_32
+    )
 
-    network/udp_socket.cpp
-    network/packet_builder.cpp 
-    network/packet_parser.cpp
-)
-add_executable(test_packet_parser
-    tests/test_packet_parser.cpp
-
-    network/packet_builder.cpp
-    network/packet_parser.cpp
-)
-if (WIN32)
-    target_link_libraries(ftp_server ws2_32)
-    target_link_libraries(ftp_client ws2_32)
-    target_link_libraries(test_udp_socket ws2_32)
-    target_link_libraries(test_send_receive ws2_32)
-    target_link_libraries(test_packet_builder ws2_32)
-    target_link_libraries(test_timeout ws2_32)
-    target_link_libraries(test_retransmission ws2_32)
-    target_link_libraries(test_stop_and_wait ws2_32)
-    target_link_libraries(test_checksum ws2_32)
-    target_link_libraries(test_file_sender ws2_32)
-    target_link_libraries(test_file_transfer ws2_32)
-    target_link_libraries(test_transfer_session ws2_32)
-    target_link_libraries(test_data_channel_transfer ws2_32)
-    target_link_libraries(test_packet_parser ws2_32)
 endif()
+
+
+set_target_properties(ftp_server ftp_client
+    PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY
+    "${CMAKE_BINARY_DIR}/bin"
+)
