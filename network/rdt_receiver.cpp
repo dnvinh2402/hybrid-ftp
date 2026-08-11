@@ -30,17 +30,7 @@ bool RDTReceiver::receive(RDTPacket &packet,
         return false;
     }
 
-    // // --------- Chỉ dùng để TEST Retransmission ---------
-    // if (firstPacket)
-    // {
-    //     firstPacket = false;
-
-    //     log_info("Simulate ACK loss (Do not send ACK)");
-
-    //     // Không gửi ACK
-    //     return true;
-    // }
-    // // ---------------------------------------------------
+   
 
     if (simulateAckLoss && firstPacketOfSession)
     {
@@ -48,7 +38,7 @@ bool RDTReceiver::receive(RDTPacket &packet,
  
         log_info("[TEST] Simulate ACK loss for first packet (config.simulateAckLoss=true).");
  
-        return true; // KHÔNG gửi ACK, để test cơ chế retransmit bên sender
+        return true; 
     }
 
     if (sendAck(packet.header.seq_num, senderIp, senderPort))
