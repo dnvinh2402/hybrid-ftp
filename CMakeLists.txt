@@ -16,6 +16,21 @@ set(COMMON_HEADERS
     common/logger.h
     common/protocol.h
     common/rdt_packet.h
+    common/sha256.h
+)
+
+set(COMMON_SOURCES
+    common/sha256.cpp
+)
+
+set(SERVER_FEATURE_SOURCES
+    server/authentication_manager.cpp
+    server/session_registry.cpp
+)
+
+set(SERVER_FEATURE_HEADERS
+    server/authentication_manager.h
+    server/session_registry.h
 )
 
 set(NETWORK_SOURCES
@@ -47,6 +62,9 @@ set(NETWORK_HEADERS
 
 add_executable(ftp_server
     server/main_server.cpp
+    ${SERVER_FEATURE_SOURCES}
+    ${SERVER_FEATURE_HEADERS}
+    ${COMMON_SOURCES}
 
     ${NETWORK_SOURCES}
     ${NETWORK_HEADERS}
@@ -59,6 +77,7 @@ target_include_directories(ftp_server PRIVATE
 
 add_executable(ftp_client
     client/main_client.cpp
+    ${COMMON_SOURCES}
 
     ${NETWORK_SOURCES}
     ${NETWORK_HEADERS}
@@ -87,3 +106,20 @@ set_target_properties(ftp_server ftp_client
     RUNTIME_OUTPUT_DIRECTORY
     "${CMAKE_BINARY_DIR}/bin"
 )
+
+enable_testing()
+
+add_executable(protocol_tests
+    tests/protocol_tests.cpp
+    server/authentication_manager.cpp
+    common/sha256.cpp
+)
+target_include_directories(protocol_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME protocol_tests COMMAND protocol_tests)
+
+add_executable(concurrency_tests
+    tests/concurrency_tests.cpp
+    server/session_registry.cpp
+)
+target_include_directories(concurrency_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME concurrency_tests COMMAND concurrency_tests)

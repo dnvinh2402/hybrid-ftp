@@ -12,6 +12,7 @@
 #include "../common/protocol.h"
 #include "../network/data_channel.h"
 #include "../network/data_channel_config.h"
+#include "../common/sha256.h"
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -110,6 +111,65 @@ std::string sendCommandAndGetReply(SOCKET sock, std::string& recv_buffer, const 
     return reply;
 }
 
+std::string extractSha256FromReply(const std::string& reply)
+{
+    const std::string prefix = "213 SHA256 ";
+
+    if (reply.rfind(prefix, 0) != 0)
+    {
+        return "";
+    }
+
+    std::string digest = reply.substr(prefix.length());
+
+    while (!digest.empty() &&
+           (digest.back() == '\r' ||
+            digest.back() == '\n'))
+    {
+        digest.pop_back();
+    }
+
+    return digest;
+}
+
+void verifyEndToEndIntegrity(SOCKET sock, std::string& recv_buffer, const std::string& localFile, const std::string& remoteFile)
+{
+    const std::string localDigest = SHA256::hashFile(localFile);
+
+    if (localDigest.empty())
+    {
+        std::cout << "Cannot calculate local SHA-256 for: " << localFile << std::endl;
+
+        return;
+    }
+
+    const std::string hashReply = sendCommandAndGetReply(sock, recv_buffer, "HASH " + remoteFile);
+
+    const std::string serverDigest = extractSha256FromReply(hashReply);
+
+    if (serverDigest.empty())
+    {
+        std::cout << "Server did not return a valid SHA-256 digest." << std::endl;
+
+        return;
+    }
+
+    std::cout << "[INTEGRITY CHECK]" << std::endl;
+
+    std::cout << "Local  SHA-256: " << localDigest << std::endl;
+
+    std::cout << "Server SHA-256: " << serverDigest << std::endl;
+
+    if (localDigest == serverDigest)
+    {
+        std::cout << "Result         : MATCH" << std::endl;
+    }
+    else
+    {
+        std::cout << "Result         : MISMATCH" << std::endl;
+    }
+}
+
 // Bóc tách IP + port từ reply 227 của PASV: "227 ... (h1,h2,h3,h4,p1,p2)."
 bool parsePasvResponse(const std::string& response, std::string& outIp, int& outPort) {
     size_t start = response.find('(');
@@ -187,8 +247,19 @@ void doPut(SOCKET sock, std::string& recv_buffer, const std::string& localPath, 
     }
 
     std::string finalReply;
-    if (receive_reply(sock, recv_buffer, finalReply)) {
+
+    if (receive_reply(sock, recv_buffer, finalReply))
+    {
         std::cout << finalReply << std::endl;
+
+        // Chỉ kiểm tra tự động cho STOR.
+        // Với APPE, file trên server còn chứa dữ liệu cũ.
+        // Với STOU, tên file thật do server tạo ra.
+        if (finalReply.rfind("226", 0) == 0 &&
+            cmdVerb == "STOR")
+        {
+            verifyEndToEndIntegrity(sock, recv_buffer, localPath, remoteName);
+        }
     }
 }
 void doGet(SOCKET sock, std::string& recv_buffer, const std::string& remoteName, std::string localPath) {
@@ -251,8 +322,16 @@ void doGet(SOCKET sock, std::string& recv_buffer, const std::string& remoteName,
     }
 
     std::string finalReply;
-    if (receive_reply(sock, recv_buffer, finalReply)) {
+
+    if (receive_reply(sock, recv_buffer, finalReply))
+    {
         std::cout << finalReply << std::endl;
+
+        if (finalReply.rfind("226", 0) == 0 &&
+            fs::exists(localPath))
+        {
+            verifyEndToEndIntegrity(sock, recv_buffer, localPath, remoteName);
+        }
     }
 }
 
@@ -322,8 +401,16 @@ void doGetViaPasv(SOCKET sock, std::string& recv_buffer, const std::string& remo
     }
 
     std::string finalReply;
-    if (receive_reply(sock, recv_buffer, finalReply)) {
+
+    if (receive_reply(sock, recv_buffer, finalReply))
+    {
         std::cout << finalReply << std::endl;
+
+        if (finalReply.rfind("226", 0) == 0 &&
+            fs::exists(localPath))
+        {
+            verifyEndToEndIntegrity(sock, recv_buffer, localPath, remoteName);
+        }
     }
 }
 

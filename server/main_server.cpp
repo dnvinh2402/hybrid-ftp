@@ -6,6 +6,10 @@
 #include <random>
 #include <thread>
 #include <fstream>
+#include <unordered_map>
+#include "authentication_manager.h"
+#include "session_registry.h"
+#include "../common/sha256.h"
 #include "../common/logger.h"
 #include "../common/protocol.h"
 #include "../network/data_channel.h"
@@ -33,6 +37,10 @@ typedef int SOCKET;
 namespace fs = std::filesystem;
 // chứa đường dẫn tuyệt đối đến thư mục ftp_root
 const fs::path SERVER_ROOT = fs::absolute("ftp_root");
+
+// New feature modules. They are shared by all client threads.
+AuthenticationManager g_authenticationManager;
+SessionRegistry g_sessionRegistry;
 
 // Hàm khởi tạo thư viện Socket (bắt buộc trên Windows)
 void init_sockets()
@@ -132,36 +140,127 @@ std::string formatPasvReply(const std::string &ip, int port)
            std::to_string(p2) + ").\r\n";
 }
 
+std::string buildHelpReply(const std::string& commandArgument)
+{
+    if (commandArgument.empty())
+    {
+        return
+            "214-The following commands are recognized:\r\n"
+            " USER PASS QUIT NOOP PWD CWD CDUP MKD RMD\r\n"
+            " LIST NLST STAT SIZE MDTM TYPE MODE PORT PASV\r\n"
+            " RETR STOR STOU APPE DELE RNFR RNTO HASH ABOR HELP\r\n"
+            "214 Help OK.\r\n";
+    }
+
+    std::string command = commandArgument;
+    for (char& character : command)
+    {
+        character = static_cast<char>(std::toupper(character));
+    }
+
+    static const std::unordered_map<std::string, std::string> helpTable = {
+        {"USER", "USER <username> - Send username for authentication."},
+        {"PASS", "PASS <password> - Send password to complete login."},
+        {"QUIT", "QUIT - Close the FTP session."},
+        {"NOOP", "NOOP - Keep the control connection alive."},
+        {"PWD",  "PWD - Show the current server directory."},
+        {"CWD",  "CWD <path> - Change the current directory."},
+        {"CDUP", "CDUP - Move to the parent directory."},
+        {"MKD",  "MKD <dirname> - Create a directory."},
+        {"RMD",  "RMD <dirname> - Remove an empty directory."},
+        {"LIST", "LIST [path] - Detailed directory listing."},
+        {"NLST", "NLST [path] - Name-only directory listing."},
+        {"STAT", "STAT [path] - Show server/session or path status."},
+        {"SIZE", "SIZE <filename> - Return file size in bytes."},
+        {"MDTM", "MDTM <filename> - Return last modification time."},
+        {"TYPE", "TYPE A|I - Select ASCII or binary transfer type."},
+        {"MODE", "MODE S|B|C - Select transfer mode."},
+        {"PORT", "PORT h1,h2,h3,h4,p1,p2 - Select Active mode."},
+        {"PASV", "PASV - Select Passive mode."},
+        {"RETR", "RETR <filename> - Download a file."},
+        {"STOR", "STOR <filename> - Upload a file."},
+        {"STOU", "STOU - Upload using a unique server-generated name."},
+        {"APPE", "APPE <filename> - Append uploaded data to a file."},
+        {"DELE", "DELE <filename> - Delete a file."},
+        {"RNFR", "RNFR <oldname> - Start rename operation."},
+        {"RNTO", "RNTO <newname> - Finish rename operation."},
+        {"HASH", "HASH <filename> - Return SHA-256 of a server file."},
+        {"ABOR", "ABOR - Request cancellation of the current transfer."},
+        {"HELP", "HELP [command] - Show command usage."}
+    };
+
+    const auto iterator = helpTable.find(command);
+    if (iterator == helpTable.end())
+    {
+        return "501 Unknown HELP command.\r\n";
+    }
+
+    return "214 " + iterator->second + "\r\n";
+}
+
+void updateTransferState(ClientSession& session, bool transferActive)
+{
+    session.transferActive.store(transferActive);
+
+    if (transferActive)
+    {
+        session.abortRequested.store(false);
+    }
+    g_sessionRegistry.setTransferActive(session.sessionId, transferActive);
+    g_sessionRegistry.printSessions();
+}
+
 // Hàm xử lý phân tích và phản hồi lệnh FTP
 void handle_client_command(SOCKET client_socket, ClientSession &session, DataChannel &dataChannel, const std::string &raw_line)
 {
     log_debug("Received command: " + raw_line);
     ParsedCommand parsed = parseLine(raw_line);
 
-    // Các lệnh cần đăng nhập trước mới được dùng (mọi lệnh trừ USER/PASS/QUIT/NOOP)
-    static const bool needsAuth[] = {}; // (không dùng - kiểm tra thủ công bên dưới cho rõ ràng)
-
     switch (parsed.cmd)
     {
     case FtpCommand::USER:
     {
+        if (parsed.arg.empty())
+        {
+            send_reply(client_socket, FTPStatus::ERR_501);
+            break;
+        }
+
+        if (!g_authenticationManager.userExists(parsed.arg))
+        {
+            session.username.clear();
+            session.authenticated = false;
+            g_sessionRegistry.updateAuthentication(session.sessionId, "", false);
+            send_reply(client_socket, "530 User not found.\r\n");
+            break;
+        }
+
         session.username = parsed.arg;
+        session.authenticated = false;
+        g_sessionRegistry.updateAuthentication(session.sessionId, session.username, false);
+        g_sessionRegistry.printSessions();
+
         log_info("Client set username: " + session.username);
         send_reply(client_socket, FTPStatus::NEED_PASS_331);
         break;
     }
     case FtpCommand::PASS:
     {
-        if (session.username.empty())
+        if (session.username.empty() ||
+            !g_authenticationManager.validateCredentials(session.username, parsed.arg))
         {
-            send_reply(client_socket, FTPStatus::ERR_530);
+            session.authenticated = false;
+            g_sessionRegistry.updateAuthentication(session.sessionId, session.username, false);
+            send_reply(client_socket, "530 Login incorrect.\r\n");
+            break;
         }
-        else
-        {
-            session.authenticated = true;
-            log_info("User '" + session.username + "' authenticated.");
-            send_reply(client_socket, FTPStatus::OK_230);
-        }
+
+        session.authenticated = true;
+        g_sessionRegistry.updateAuthentication(session.sessionId, session.username, true);
+        g_sessionRegistry.printSessions();
+
+        log_info("User '" + session.username + "' authenticated.");
+        send_reply(client_socket, FTPStatus::OK_230);
         break;
     }
     case FtpCommand::NOOP:
@@ -448,10 +547,12 @@ void handle_client_command(SOCKET client_socket, ClientSession &session, DataCha
             }
 
             send_reply(client_socket, FTPStatus::OK_150);
+            updateTransferState(session, true);
 
             // receiveFile() TỰ BLOCK chờ đúng theo Stop-and-Wait, tới khi
             // nhận đủ FIN hoặc vượt quá số lần timeout liên tiếp cho phép.
             bool ok = dataChannel.receiveFile();
+            updateTransferState(session, false);
             if (!ok)
             {
                 send_reply(client_socket, FTPStatus::ERR_426);
@@ -523,7 +624,9 @@ void handle_client_command(SOCKET client_socket, ClientSession &session, DataCha
                 send_reply(client_socket, FTPStatus::OK_150);
             }
 
+            updateTransferState(session, true);
             bool ok = dataChannel.sendFile(target->string(), destIp, destPort);
+            updateTransferState(session, false);
             send_reply(client_socket, ok ? FTPStatus::OK_226 : FTPStatus::ERR_426);
             break;
         }
@@ -581,7 +684,9 @@ void handle_client_command(SOCKET client_socket, ClientSession &session, DataCha
                 send_reply(client_socket, FTPStatus::OK_150);
             }
 
+            updateTransferState(session, true);
             bool ok = dataChannel.sendFile(tempListing.string(), destIp, destPort);
+            updateTransferState(session, false);
             std::error_code ec;
             fs::remove(tempListing, ec);
             send_reply(client_socket, ok ? FTPStatus::OK_226 : FTPStatus::ERR_426);
@@ -647,7 +752,9 @@ void handle_client_command(SOCKET client_socket, ClientSession &session, DataCha
                 send_reply(client_socket, FTPStatus::OK_150);
             }
 
+            updateTransferState(session, true);
             bool ok = dataChannel.sendFile(tempListing.string(), destIp, destPort);
+            updateTransferState(session, false);
             std::error_code ec;
             fs::remove(tempListing, ec);
             send_reply(client_socket, ok ? FTPStatus::OK_226 : FTPStatus::ERR_426);
@@ -669,7 +776,9 @@ void handle_client_command(SOCKET client_socket, ClientSession &session, DataCha
                                      "_" + std::to_string(nowMs) + ext;
 
             send_reply(client_socket, FTPStatus::OK_150);
+            updateTransferState(session, true);
             bool ok = dataChannel.receiveFile();
+            updateTransferState(session, false);
             if (!ok)
             {
                 send_reply(client_socket, FTPStatus::ERR_426);
@@ -712,7 +821,9 @@ void handle_client_command(SOCKET client_socket, ClientSession &session, DataCha
             }
 
             send_reply(client_socket, FTPStatus::OK_150);
+            updateTransferState(session, true);
             bool ok = dataChannel.receiveFile();
+            updateTransferState(session, false);
             if (!ok)
             {
                 send_reply(client_socket, FTPStatus::ERR_426);
@@ -803,25 +914,53 @@ void handle_client_command(SOCKET client_socket, ClientSession &session, DataCha
 
         case FtpCommand::ABOR:
         {
-            send_reply(client_socket, "225 ABOR command successful.\r\n");
+            // TCP/control-plane half of ABOR.
+            // The Data Plane owner must make FileSender/FileReceiver observe
+            // session.abortRequested while a transfer is running.
+            if (!session.transferActive.load())
+            {
+                send_reply(client_socket, FTPStatus::OK_225);
+                break;
+            }
+
+            //dataChannel.requestAbort();
+
+            // 426: the data transfer is being aborted.
+            // 226: the ABOR control command itself was accepted.
+            send_reply(client_socket, FTPStatus::ERR_426);
+            send_reply(client_socket, "226 Abort request accepted.\r\n");
             break;
         }
 
         case FtpCommand::HELP:
         {
-            std::string helpText = 
-                "214-The following commands are recognized:\r\n"
-                " USER PASS PWD CWD CDUP MKD RMD DELE RNFR RNTO\r\n"
-                " TYPE SIZE PORT PASV STOR RETR LIST NLST STOU APPE\r\n"
-                " MDTM MODE ABOR HELP HASH NOOP QUIT\r\n"
-                "214 Help OK.\r\n";
-            send_reply(client_socket, helpText);
+            send_reply(client_socket, buildHelpReply(parsed.arg));
             break;
         }
 
         case FtpCommand::HASH:
         {
-            send_reply(client_socket, "200 HASH command accepted.\r\n");
+            if (parsed.arg.empty())
+            {
+                send_reply(client_socket, FTPStatus::ERR_501);
+                break;
+            }
+
+            auto target = resolveVirtualPath(session, parsed.arg);
+            if (!target || !fs::is_regular_file(*target))
+            {
+                send_reply(client_socket, FTPStatus::ERR_550);
+                break;
+            }
+
+            const std::string digest = SHA256::hashFile(target->string());
+            if (digest.empty())
+            {
+                send_reply(client_socket, FTPStatus::ERR_550);
+                break;
+            }
+
+            send_reply(client_socket, "213 SHA256 " + digest + "\r\n");
             break;
         }
         case FtpCommand::STAT:
@@ -884,7 +1023,6 @@ void handle_client_command(SOCKET client_socket, ClientSession &session, DataCha
         break;
     }
     }
-    (void)needsAuth; // dập cảnh báo của compiler khi biến chưa được sử dụng.
 }
 
 // ---------------------------------------------------------------------
@@ -894,9 +1032,9 @@ void handle_client_command(SOCKET client_socket, ClientSession &session, DataCha
 // Nhận client_socket theo GIÁ TRỊ (không phải &) vì mỗi thread cần
 // bản sao độc lập của biến này, sống suốt đời thread đó.
 // ---------------------------------------------------------------------
-void handle_client_session(SOCKET client_socket)
+void handle_client_session(SOCKET client_socket, const std::string& clientIp)
 {
-    log_info("New client connected!");
+    log_info("New client connected from " + clientIp + "!");
 
     // ClientSession khai báo LOCAL trong hàm chạy trên thread riêng
     // -> mỗi thread có 1 session hoàn toàn độc lập, không đụng chạm
@@ -904,6 +1042,11 @@ void handle_client_session(SOCKET client_socket)
     ClientSession session;
     DataChannel dataChannel; // Kênh dữ liệu UDP RIÊNG của client này, mở khi PASV/PORT
     session.controlSocketFd = static_cast<int>(client_socket);
+    session.sessionId = static_cast<int>(client_socket);
+    session.clientIp = clientIp;
+
+    g_sessionRegistry.addSession(session.sessionId, clientIp);
+    g_sessionRegistry.printSessions();
 
     send_reply(client_socket, FTPStatus::OK_220);
 
@@ -943,13 +1086,24 @@ void handle_client_session(SOCKET client_socket)
         }
     }
 
+    g_sessionRegistry.removeSession(session.sessionId);
+    g_sessionRegistry.printSessions();
+
     closesocket(client_socket);
-    log_info("Closed client connection.");
+    log_info("Closed client connection from " + clientIp + ".");
 }
 
 int main()
 {
     init_sockets();
+
+    if (!g_authenticationManager.loadUsers("config/users.txt"))
+    {
+        log_error("Cannot load config/users.txt. Server will stop.");
+        cleanup_sockets();
+        return 1;
+    }
+
     log_info("Starting Hybrid FTP Server on Port " + std::to_string(SERVER_PORT) + "...");
 
     // Tạo thư mục gốc ảo trên đĩa nếu chưa có -- BẮT BUỘC phải chạy trước
@@ -1012,12 +1166,14 @@ int main()
             continue;
         }
 
-        // Giao toàn bộ việc phục vụ client này cho 1 thread MỚI.
-        // .detach() nghĩa là main() KHÔNG chờ thread này chạy xong —
-        // thread tự sống độc lập, tự dọn dẹp khi hàm handle_client_session
-        // return (client ngắt kết nối / QUIT). Nhờ vậy vòng lặp while(true)
-        // ở dưới quay lại accept() NGAY LẬP TỨC để nhận client tiếp theo.
-        std::thread(handle_client_session, client_socket).detach();
+        char clientIpBuffer[INET_ADDRSTRLEN] = {};
+        inet_ntop(AF_INET, &client_addr.sin_addr, clientIpBuffer, sizeof(clientIpBuffer));
+        const std::string clientIp = clientIpBuffer;
+
+        log_info("Accepted TCP client: " + clientIp);
+
+        // One thread handles one independent FTP control session.
+        std::thread(handle_client_session, client_socket, clientIp).detach();
     } // Kết thúc vòng lặp accept (Server tiếp tục chờ Client tiếp theo)
 
     // Đóng Server socket khi dừng Server

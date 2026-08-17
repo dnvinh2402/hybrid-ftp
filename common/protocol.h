@@ -4,14 +4,16 @@
 #include <string>
 #include <sstream>
 #include <unordered_map>
+#include <atomic>
 
 // Mã phản hồi chuẩn FTP (Standard FTP Reply Codes)
 namespace FTPStatus {
-     const std::string OK_125          = "125 Data connection already open; transfer starting.\r\n";
+    const std::string OK_125          = "125 Data connection already open; transfer starting.\r\n";
     const std::string OK_150          = "150 File status okay; opening data connection.\r\n";
     const std::string OK_200          = "200 Command OK.\r\n";
     const std::string OK_220          = "220 Service ready for new user.\r\n";
     const std::string OK_221          = "221 Goodbye.\r\n";
+    const std::string OK_225          = "225 No transfer in progress.\r\n";
     const std::string OK_226          = "226 Closing data connection. Requested file action successful.\r\n";
     const std::string OK_230          = "230 User logged in, proceed.\r\n";
     const std::string OK_250          = "250 Requested file action okay, completed.\r\n";
@@ -96,6 +98,7 @@ enum class DataConnMode { NONE, ACTIVE, PASSIVE };       // PORT | PASV
  
 struct ClientSession {
     int controlSocketFd = -1;
+    int sessionId = 0;
     std::string clientIp;
  
     bool authenticated = false;
@@ -110,5 +113,11 @@ struct ClientSession {
     int dataPort = 0;
  
     std::string renameFrom; // ho tro RNFR/RNTO
+
+    // true khi session đang truyền dữ liệu.
+    std::atomic<bool> transferActive{false};
+
+    // true khi TCP control nhận lệnh ABOR.
+    std::atomic<bool> abortRequested{false};
 };
 #endif // PROTOCOL_H
