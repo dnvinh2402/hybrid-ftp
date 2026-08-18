@@ -43,6 +43,8 @@ public:
     const TransferSession &getTransferSession() const;      // session của lần GỬI gần nhất (RETR)
     const TransferSession &getReceiveTransferSession() const; // session của lần NHẬN gần nhất (STOR)
 
+    void abortTransfer();
+
 private:
     UDPSocket *socket;
 

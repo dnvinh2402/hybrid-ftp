@@ -26,8 +26,8 @@ bool RDTReceiver::receive(RDTPacket &packet,
     receiveCount++;
 
     //tatlog
-    // log_info("Receive packet #" + std::to_string(receiveCount));
-    // log_info("SEQ = " + std::to_string(packet.header.seq_num));
+    log_info("Receive packet #" + std::to_string(receiveCount));
+    log_info("SEQ = " + std::to_string(packet.header.seq_num));
 
     if (!verifyChecksum(packet))
     {

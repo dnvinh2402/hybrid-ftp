@@ -11,9 +11,12 @@ FileReceiver::FileReceiver(RDTReceiver &receiver)
 void FileReceiver::resetSession()
 {
     session = TransferSession();
-    // aborted.store(false);   // reset trước mỗi phiên nhận mới
+    aborted.store(false);   // reset trước mỗi phiên nhận mới
 }
-
+void FileReceiver::abortTransfer()
+{
+    aborted.store(true);
+}
 bool FileReceiver::receiveFile()
 {
     resetSession();
@@ -22,21 +25,21 @@ bool FileReceiver::receiveFile()
     rdtReceiver.resetSession();
 
     FileMetadata metadata{};
-    bool         metadataReceived    = false;
+    bool metadataReceived = false;
     std::ofstream file;
-    int           consecutiveTimeouts = 0;
+    int consecutiveTimeouts = 0;
 
     while (!session.finished)
     {
         // Kiểm tra abort flag — được set bởi ABOR handler trên thread khác
-        // if (aborted.load())
-        // {
-        //     log_info("FileReceiver: aborted by ABOR command.");
-        //     if (file.is_open()) file.close();
-        //     return false;
-        // }
-        RDTPacket     packet;
-        std::string   ip;
+        if (aborted.load())
+        {
+            log_info("FileReceiver: aborted by ABOR command.");
+            if (file.is_open()) file.close();
+            return false;
+        }
+        RDTPacket packet;
+        std::string ip;
         unsigned short port;
 
         if (!rdtReceiver.receive(packet, ip, port))
@@ -68,7 +71,15 @@ bool FileReceiver::receiveFile()
             if (file.is_open()) file.close();
             return false;
         }
-
+        if (packet.header.flags & RDTFlag::ABOR)
+        {
+            log_info("FileReceiver: ABOR flag received from peer data channel.");
+            if (file.is_open()) file.close();
+            if (metadataReceived) {
+                std::filesystem::remove("server_files/" + session.fileName);
+            }
+            return false;
+        }
         // ── Parse metadata ───────────────────────────────────────────────
         bool isMeta = PacketParser::parseMetadata(packet, metadata);
 
@@ -195,9 +206,9 @@ bool FileReceiver::receiveFile()
         session.packetsTransferred++;
 
         //tatlog
-        // log_info("Packet seq=" + std::to_string(packet.header.seq_num) +
-        //          " received (" + std::to_string(packet.header.payload_len) +
-        //          " bytes). Total=" + std::to_string(session.bytesTransferred));
+        log_info("Packet seq=" + std::to_string(packet.header.seq_num) +
+                 " received (" + std::to_string(packet.header.payload_len) +
+                 " bytes). Total=" + std::to_string(session.bytesTransferred));
     }
 
     if (file.is_open())

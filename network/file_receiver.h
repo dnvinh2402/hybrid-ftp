@@ -8,6 +8,7 @@
 #include "../common/rdt_packet.h"
 #include "../common/file_metadata.h"
 #include "packet_parser.h"
+#include <atomic>
 class RDTReceiver;
 
 class FileReceiver
@@ -15,15 +16,16 @@ class FileReceiver
 private:
     RDTReceiver &rdtReceiver;
     TransferSession session;
-    void resetSession();
-    void printSummary() const;
     static constexpr int MAX_CONSECUTIVE_TIMEOUTS = 10; // so lan timeout lientiep toi da cho phep
+    std::atomic<bool> aborted{false};
 
 public:
     explicit FileReceiver(RDTReceiver &receiver);
-
+    void resetSession();
     bool receiveFile();
+    void printSummary() const;
     const TransferSession& getSession() const;
+    void abortTransfer();
 };
 
 #endif
