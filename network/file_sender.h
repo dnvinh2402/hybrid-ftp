@@ -4,7 +4,7 @@
 #include "packet_builder.h"
 #include "rdt_sender.h"
 #include "transfer_session.h"
-
+#include <atomic>
 // Forward declaration để tránh include vòng
 class SlidingWindowSender;
 
@@ -24,7 +24,7 @@ private:
 
     void resetSession();
     void printSummary(double elapsedSec = 0.0) const;
-
+    std::atomic<bool> aborted{false};
 public:
     explicit FileSender(RDTSender &sender);
 
@@ -37,4 +37,5 @@ public:
                   unsigned short receiverPort);
 
     const TransferSession &getSession() const;
+    void abortTransfer();
 };

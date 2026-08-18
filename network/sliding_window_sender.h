@@ -4,6 +4,7 @@
 #include <vector>
 #include <deque>
 #include <chrono>
+#include <atomic>
 #include "../common/rdt_packet.h"
 
 class UDPSocket;
@@ -32,14 +33,14 @@ public:
     // Kích thước cửa sổ: 8 gói in-flight cùng lúc.
     // Với MAX_PAYLOAD_SIZE=1400 và RTT ~1ms LAN → ~11 MB/s throughput lý thuyết.
     // Có thể tăng lên 16 hoặc 32 nếu mạng cho phép.
-    static constexpr int WINDOW_SIZE  = 32;
+    static constexpr int WINDOW_SIZE  = 16;
 
     // Timeout mỗi lần poll ACK (ms). Ngắn hơn timeout socket để
     // phát hiện loss sớm mà không phải chờ hết toàn bộ SO_RCVTIMEO.
     static constexpr int POLL_TIMEOUT_MS = 500;
 
     // Số lần toàn bộ cửa sổ bị timeout liên tiếp trước khi báo lỗi.
-    static constexpr int MAX_WINDOW_RETRIES = 20;
+    static constexpr int MAX_WINDOW_RETRIES = 5;
 
     explicit SlidingWindowSender(UDPSocket &socket);
 
@@ -54,6 +55,8 @@ public:
     // cho những gói cuối còn nằm trong cửa sổ.
     bool flush();
 
+    void abortTransfer();
+
 private:
     UDPSocket &udp;
 
@@ -63,8 +66,10 @@ private:
     // Circular buffer — lưu bản sao của các packet đã gửi nhưng chưa ACK.
     // Index = seq_num % WINDOW_SIZE
     std::vector<RDTPacket> window;           // size = WINDOW_SIZE
-    std::vector<bool>      acked;            // true = đã nhận ACK
+    std::vector<bool> acked;            // true = đã nhận ACK
     std::vector<std::chrono::steady_clock::time_point> sentTime; // thời điểm gửi
+
+    std::atomic<bool> aborted{false};
 
     uint32_t base        = 0;  // seq nhỏ nhất chưa được ACK
     uint32_t nextToSend  = 0;  // seq tiếp theo sẽ gửi
@@ -79,8 +84,9 @@ private:
     bool retransmitWindow();
 
     // Tính seq_num % WINDOW_SIZE để index vào circular buffer.
-    static int slot(uint32_t seq) { return static_cast<int>(seq % WINDOW_SIZE); }
-
+    static int slot(uint32_t seq) { 
+    return static_cast<int>(seq % static_cast<uint32_t>(WINDOW_SIZE)); 
+}
     // Kiểm tra xem cửa sổ có đầy không.
     bool windowFull() const { return (nextToSend - base) >= static_cast<uint32_t>(WINDOW_SIZE); }
 };

@@ -23,9 +23,13 @@ void SlidingWindowSender::beginSession(const std::string &ip, unsigned short por
     base = 0;
     nextToSend = 0;
     windowRetries = 0;
+    aborted.store(false);
     std::fill(acked.begin(), acked.end(), false);
 }
-
+void SlidingWindowSender::abortTransfer()
+{
+    aborted.store(true);
+}
 // ------------------------------------------------------------
 //  drainAcks() — đọc tất cả ACK đang có trong buffer socket.
 //
@@ -75,6 +79,7 @@ int SlidingWindowSender::drainAcks()
         // hoặc đã được xử lý trước đó).
         if (ackedSeq < base || ackedSeq >= nextToSend)
         {
+            // tatlog
             log_info("[GBN] Stale/out-of-window ACK seq=" +
                      std::to_string(ackedSeq) + " (base=" +
                      std::to_string(base) + " next=" +
@@ -83,32 +88,22 @@ int SlidingWindowSender::drainAcks()
         }
 
         // Đánh dấu slot này đã được ACK
-        acked[slot(ackedSeq)] = true;
-        count++;
-        //tatlog
-        // log_info("[GBN] ACK received seq=" + std::to_string(ackedSeq) +
-        //          " (base=" + std::to_string(base) + ")");
-
-        // Trượt base về phía trước qua tất cả slot liên tiếp đã ACK
-        // (cumulative ACK kiểu GBN: nếu ACK(3) đến và 0,1,2 chưa ACK
-        //  thì GBN KHÔNG trượt base -- receiver đã bỏ tất cả out-of-order
-        //  và chỉ ACK theo thứ tự. Nhưng do network có thể reorder ACK,
-        //  ta vẫn cần kiểm tra từng slot từ base.)
-        // while (base < nextToSend && acked[slot(base)])
-        // {
-        //     acked[slot(base)] = false;  // clear để slot có thể tái dùng
-        //     base++;
-        // }
-
         if (ackedSeq >= base && ackedSeq < nextToSend)
         {
-            count++;
-            // Trượt base qua tất cả slot liên tiếp (Cumulative)
-            while (base <= ackedSeq)
+            //tatlog
+            log_info("[GBN] ACK received seq=" +
+                     std::to_string(ackedSeq) +
+                     " (base=" + std::to_string(base) + ")");
+
+            // ACK cumulative:
+            // ACK(n) xác nhận tất cả packet từ base đến n.
+            while (base <= ackedSeq && base < nextToSend)
             {
                 acked[slot(base)] = false;
                 base++;
             }
+
+            count++;
         }
 
         // Nếu cửa sổ đã trống thì không cần đọc tiếp
@@ -172,6 +167,11 @@ bool SlidingWindowSender::send(const RDTPacket &packet)
     // Đợi cho đến khi cửa sổ có chỗ trống
     while (windowFull())
     {
+        if (aborted.load())
+        {
+            log_info("[GBN] Sender aborted during windowFull wait.");
+            return false;
+        }
         int got = drainAcks();
         if (got > 0)
         {
@@ -216,10 +216,10 @@ bool SlidingWindowSender::send(const RDTPacket &packet)
 
     sentTime[s] = Clock::now();
     windowRetries = 0;
-    //tatlog
-    // log_info("[GBN] Sent seq=" + std::to_string(packet.header.seq_num) +
-    //          " (window: base=" + std::to_string(base) +
-    //          " inFlight=" + std::to_string(nextToSend - base + 1) + ")");
+    // tatlog
+    log_info("[GBN] Sent seq=" + std::to_string(packet.header.seq_num) +
+             " (window: base=" + std::to_string(base) +
+             " inFlight=" + std::to_string(nextToSend - base + 1) + ")");
 
     nextToSend++;
 
@@ -240,6 +240,11 @@ bool SlidingWindowSender::flush()
 
     while (base < nextToSend)
     {
+        if (aborted.load())
+        {
+            log_info("[GBN] Sender aborted during flush.");
+            return false;
+        }
         int got = drainAcks();
         if (got > 0)
         {

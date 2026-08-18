@@ -122,7 +122,7 @@ bool DataChannel::open(const DataChannelConfig &config)
     if (windowSender != nullptr)
         fileSender->setWindowSender(windowSender);
     log_info("Mode     : " + std::string(this->config.useGBN
-                                             ? "Go-Back-N (W=8)"
+                                             ? "Go-Back-N (W=32)"
                                              : "Stop-and-Wait"));
     opened = true;
     log_info("--------------------------------");
@@ -243,4 +243,24 @@ bool DataChannel::receiveHandshake(std::string &outIp, unsigned short &outPort)
     outPort = senderPort;
     log_info("Handshake OK. Client data address: " + outIp + ":" + std::to_string(outPort));
     return true;
+}
+void DataChannel::abortTransfer()
+{
+    if (!opened)
+        return;
+
+    log_info("DataChannel: Initiating abort sequence...");
+
+    if (fileReceiver != nullptr)
+    {
+        fileReceiver->abortTransfer();
+    }
+
+    if (fileSender != nullptr)
+    {
+        fileSender->abortTransfer();
+    }
+
+    // KHÔNG close() ở đây.
+    // Transfer hiện tại phải tự thoát trước.
 }

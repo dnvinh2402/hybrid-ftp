@@ -61,7 +61,6 @@ void send_reply(SOCKET client_socket, const std::string &reply)
     log_debug("Sent reply: " + reply);
 }
 
-
 std::optional<fs::path> resolveVirtualPath(const ClientSession &session, const std::string &arg)
 {
     // Nếu arg rỗng -> dùng thư mục hiện tại của session
@@ -378,7 +377,7 @@ void handle_client_command(SOCKET client_socket, ClientSession &session, DataCha
             cfg.localPort = 0; // ACTIVE mode: để hệ điều hành tự chọn port cho server
             cfg.timeout = 2000;
             cfg.maxRetry = 5;
-            cfg.useGBN  = true;
+            cfg.useGBN = true;
             cfg.simulateAckLoss = false;
 
             if (!dataChannel.open(cfg))
@@ -417,7 +416,7 @@ void handle_client_command(SOCKET client_socket, ClientSession &session, DataCha
                 cfg.timeout = 2000;
                 cfg.maxRetry = 5;
                 cfg.simulateAckLoss = false;
-                cfg.useGBN  = true;
+                cfg.useGBN = true;
                 opened = dataChannel.open(cfg);
             }
 
@@ -451,45 +450,44 @@ void handle_client_command(SOCKET client_socket, ClientSession &session, DataCha
 
             send_reply(client_socket, FTPStatus::OK_150);
 
-            // receiveFile() TỰ BLOCK chờ đúng theo Stop-and-Wait, tới khi
-            // nhận đủ FIN hoặc vượt quá số lần timeout liên tiếp cho phép.
-            bool ok = dataChannel.receiveFile();
-            if (!ok)
-            {
-                send_reply(client_socket, FTPStatus::ERR_426);
-                break;
-            }
+            // Bọc vào luồng riêng để giải phóng luồng chính nhận lệnh ABOR
+            std::thread([client_socket, session, arg = parsed.arg, &dataChannel]()
+                        {
+                bool ok = dataChannel.receiveFile();
+                if (!ok)
+                {
+                    send_reply(client_socket, FTPStatus::ERR_426);
+                    return;
+                }
 
-            // FileReceiver LUÔN ghi ra "server_files/<tên client tự gửi trong
-            // metadata>" (thiết kế gốc của đồng đội, không phụ thuộc thư mục
-            // ảo hiện tại của session) -- phải MỜI file đó vào đúng vị trí
-            // trong SERVER_ROOT theo tên mà lệnh STOR yêu cầu (parsed.arg).
-            const TransferSession &recvInfo = dataChannel.getReceiveTransferSession();
-            fs::path receivedPath = fs::path("server_files") / recvInfo.fileName;
+                const TransferSession &recvInfo = dataChannel.getReceiveTransferSession();
+                fs::path receivedPath = fs::path("server_files") / recvInfo.fileName;
 
-            auto dest = resolveVirtualPath(session, parsed.arg);
-            if (!dest || !fs::exists(receivedPath))
-            {
-                log_error("STOR: received file not found at expected temp location.");
-                send_reply(client_socket, FTPStatus::ERR_550);
-                break;
-            }
+                auto tempSession = session; 
+                auto dest = resolveVirtualPath(tempSession, arg);
+                if (!dest || !fs::exists(receivedPath))
+                {
+                    log_error("STOR: received file not found at expected temp location.");
+                    send_reply(client_socket, FTPStatus::ERR_550);
+                    return;
+                }
 
-            std::error_code ec;
-            fs::rename(receivedPath, *dest, ec);
-            if (ec)
-            {
-                send_reply(client_socket, FTPStatus::ERR_550);
-                break;
-            }
+                std::error_code ec;
+                fs::rename(receivedPath, *dest, ec);
+                if (ec)
+                {
+                    send_reply(client_socket, FTPStatus::ERR_550);
+                    return;
+                }
 
-            send_reply(client_socket, FTPStatus::OK_226);
+                send_reply(client_socket, FTPStatus::OK_226); })
+                .detach();
+
             break;
         }
 
         case FtpCommand::RETR:
         {
-
             if (session.dataMode == DataConnMode::NONE || !dataChannel.isOpened())
             {
                 send_reply(client_socket, FTPStatus::ERR_425);
@@ -506,7 +504,6 @@ void handle_client_command(SOCKET client_socket, ClientSession &session, DataCha
             std::string destIp = session.dataIp;
             unsigned short destPort = static_cast<unsigned short>(session.dataPort);
 
-            // Hỗ trợ PASV cho RETR bằng cách chờ gói Handshake từ Client
             if (session.dataMode == DataConnMode::PASSIVE)
             {
                 send_reply(client_socket, FTPStatus::OK_150);
@@ -525,11 +522,15 @@ void handle_client_command(SOCKET client_socket, ClientSession &session, DataCha
                 send_reply(client_socket, FTPStatus::OK_150);
             }
 
-            bool ok = dataChannel.sendFile(target->string(), destIp, destPort);
-            send_reply(client_socket, ok ? FTPStatus::OK_226 : FTPStatus::ERR_426);
+            // Bọc vào luồng riêng để không block luồng chính
+            std::thread([client_socket, targetPath = target->string(), destIp, destPort, &dataChannel]()
+                        {
+                bool ok = dataChannel.sendFile(targetPath, destIp, destPort);
+                send_reply(client_socket, ok ? FTPStatus::OK_226 : FTPStatus::ERR_426); })
+                .detach();
+
             break;
         }
-
         case FtpCommand::LIST:
         {
             if (session.dataMode == DataConnMode::NONE || !dataChannel.isOpened())
@@ -775,10 +776,9 @@ void handle_client_command(SOCKET client_socket, ClientSession &session, DataCha
                 }
 
                 auto s_time = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
-                    ftime - fs::file_time_type::clock::now() + std::chrono::system_clock::now()
-                );
+                    ftime - fs::file_time_type::clock::now() + std::chrono::system_clock::now());
                 std::time_t tt = std::chrono::system_clock::to_time_t(s_time);
-                std::tm* gmt = std::gmtime(&tt);
+                std::tm *gmt = std::gmtime(&tt);
 
                 char timeBuf[30];
                 std::strftime(timeBuf, sizeof(timeBuf), "%Y%m%d%H%M%S", gmt);
@@ -790,7 +790,8 @@ void handle_client_command(SOCKET client_socket, ClientSession &session, DataCha
         case FtpCommand::MODE:
         {
             std::string t = parsed.arg;
-            for (auto &c : t) c = toupper(c);
+            for (auto &c : t)
+                c = toupper(c);
 
             if (t == "S" || t.empty())
             {
@@ -805,13 +806,30 @@ void handle_client_command(SOCKET client_socket, ClientSession &session, DataCha
 
         case FtpCommand::ABOR:
         {
-            send_reply(client_socket, "225 ABOR command successful.\r\n");
+            if (dataChannel.isOpened() && dataChannel.isBusy())
+            {
+                // 1. Kích hoạt cờ ngắt (aborted = true) cho FileSender/FileReceiver/GBN
+                dataChannel.abortTransfer();
+
+                // 2. Ép đóng Socket UDP ngay lập tức để đánh thức các tiến trình đang block (gây lỗi socket -> thoát vòng lặp ngay)
+                // dataChannel.close();
+
+                // send_reply(client_socket, "426 Connection closed; transfer aborted.\r\n");
+                send_reply(client_socket, "226 ABOR command successful.\r\n");
+            }
+            else
+            {
+                if (dataChannel.isOpened())
+                {
+                    dataChannel.close();
+                }
+                send_reply(client_socket, "225 ABOR command successful.\r\n");
+            }
             break;
         }
-
         case FtpCommand::HELP:
         {
-            std::string helpText = 
+            std::string helpText =
                 "214-The following commands are recognized:\r\n"
                 " USER PASS PWD CWD CDUP MKD RMD DELE RNFR RNTO\r\n"
                 " TYPE SIZE PORT PASV STOR RETR LIST NLST STOU APPE\r\n"
@@ -832,16 +850,22 @@ void handle_client_command(SOCKET client_socket, ClientSession &session, DataCha
             {
                 // 1. STAT không tham số: Trả về trạng thái Session hiện tại
                 std::string dataModeStr = "NONE";
-                if (session.dataMode == DataConnMode::PASSIVE) dataModeStr = "PASSIVE";
-                else if (session.dataMode == DataConnMode::ACTIVE) dataModeStr = "ACTIVE";
+                if (session.dataMode == DataConnMode::PASSIVE)
+                    dataModeStr = "PASSIVE";
+                else if (session.dataMode == DataConnMode::ACTIVE)
+                    dataModeStr = "ACTIVE";
 
-                std::string statusMsg = 
+                std::string statusMsg =
                     "211- Hybrid FTP Server Status:\r\n"
-                    " Connected user: " + (session.username.empty() ? "Anonymous" : session.username) + "\r\n"
-                    " Current directory: " + session.currentDir + "\r\n"
-                    " Transfer Type: " + (session.type == TransferType::ASCII ? "ASCII" : "BINARY") + "\r\n"
-                    " Data Connection Mode: " + dataModeStr + "\r\n"
-                    "211 End of status.\r\n";
+                    " Connected user: " +
+                    (session.username.empty() ? "Anonymous" : session.username) + "\r\n"
+                                                                                  " Current directory: " +
+                    session.currentDir + "\r\n"
+                                         " Transfer Type: " +
+                    (session.type == TransferType::ASCII ? "ASCII" : "BINARY") + "\r\n"
+                                                                                 " Data Connection Mode: " +
+                    dataModeStr + "\r\n"
+                                  "211 End of status.\r\n";
                 send_reply(client_socket, statusMsg);
             }
             else
@@ -856,10 +880,11 @@ void handle_client_command(SOCKET client_socket, ClientSession &session, DataCha
                 {
                     std::error_code ec;
                     auto sz = fs::file_size(*target, ec);
-                    std::string fileMsg = 
+                    std::string fileMsg =
                         "213- File status for " + parsed.arg + ":\r\n"
-                        " Size: " + std::to_string(sz) + " bytes\r\n"
-                        "213 End of status.\r\n";
+                                                               " Size: " +
+                        std::to_string(sz) + " bytes\r\n"
+                                             "213 End of status.\r\n";
                     send_reply(client_socket, fileMsg);
                 }
                 else if (fs::is_directory(*target))
@@ -875,7 +900,6 @@ void handle_client_command(SOCKET client_socket, ClientSession &session, DataCha
             }
             break;
         }
-
 
         default:
         {
