@@ -18,6 +18,7 @@ DataChannel::DataChannel()
     receiver = nullptr;
     fileSender = nullptr;
     fileReceiver = nullptr;
+    windowSender = nullptr;
     opened = false;
 }
 
@@ -39,6 +40,9 @@ void DataChannel::resetResources()
 
     delete receiver;
     receiver = nullptr;
+
+    delete windowSender;
+    windowSender = nullptr;
 
     if (socket != nullptr)
     {
@@ -106,9 +110,20 @@ bool DataChannel::open(const DataChannelConfig &config)
     // quyết định (mặc định false -> hành vi ACK bình thường).
     receiver = new RDTReceiver(*socket, this->config.simulateAckLoss);
 
+    if (this->config.useGBN)
+    {
+        windowSender = new SlidingWindowSender(*socket);
+        // SlidingWindowSender.WINDOW_SIZE override bằng config nếu muốn
+    }
+
     fileSender = new FileSender(*sender);
     fileReceiver = new FileReceiver(*receiver);
 
+    if (windowSender != nullptr)
+        fileSender->setWindowSender(windowSender);
+    log_info("Mode     : " + std::string(this->config.useGBN
+                                             ? "Go-Back-N (W=8)"
+                                             : "Stop-and-Wait"));
     opened = true;
     log_info("--------------------------------");
     log_info("Open DataChannel");

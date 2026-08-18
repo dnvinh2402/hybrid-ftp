@@ -4,6 +4,7 @@
 #include <string>
 #include "data_channel_config.h"
 #include "transfer_session.h"
+#include "sliding_window_sender.h" 
 class UDPSocket;
 class RDTSender;
 class RDTReceiver;
@@ -59,6 +60,7 @@ private:
     bool opened;
     DataChannelConfig config;
     bool busy = false;
+     SlidingWindowSender* windowSender = nullptr;
 };
 
 #endif

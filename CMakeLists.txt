@@ -27,6 +27,7 @@ set(NETWORK_SOURCES
     network/rdt_receiver.cpp
     network/rdt_sender.cpp
     network/udp_socket.cpp
+    network/sliding_window_sender.cpp
 )
 
 set(NETWORK_HEADERS
@@ -41,6 +42,7 @@ set(NETWORK_HEADERS
     network/tcp_server.h
     network/transfer_session.h
     network/udp_socket.h
+    network/sliding_window_sender.h
 )
 
 

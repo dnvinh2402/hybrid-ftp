@@ -378,6 +378,7 @@ void handle_client_command(SOCKET client_socket, ClientSession &session, DataCha
             cfg.localPort = 0; // ACTIVE mode: để hệ điều hành tự chọn port cho server
             cfg.timeout = 2000;
             cfg.maxRetry = 5;
+            cfg.useGBN  = true;
             cfg.simulateAckLoss = false;
 
             if (!dataChannel.open(cfg))
@@ -416,6 +417,7 @@ void handle_client_command(SOCKET client_socket, ClientSession &session, DataCha
                 cfg.timeout = 2000;
                 cfg.maxRetry = 5;
                 cfg.simulateAckLoss = false;
+                cfg.useGBN  = true;
                 opened = dataChannel.open(cfg);
             }
 

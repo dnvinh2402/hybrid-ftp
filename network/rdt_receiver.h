@@ -24,4 +24,5 @@ public:
     bool sendAck(uint32_t seq,
                  const std::string &ip,
                  unsigned short port);
+    void resetSession();
 };
