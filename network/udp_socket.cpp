@@ -108,8 +108,9 @@ bool UDPSocket::receivePacket(RDTPacket& packet,
     senderIp = ipBuffer;
     senderPort = ntohs(senderAddr.sin_port);
 
-    log_debug("Received UDP packet from "
-              + senderIp + ":" + std::to_string(senderPort));
+    //tatlog
+    // log_debug("Received UDP packet from "
+    //           + senderIp + ":" + std::to_string(senderPort));
 
     return true;
 }
@@ -148,7 +149,8 @@ bool UDPSocket::sendPacket(const RDTPacket& packet,
         return false;
     }
 
-    log_debug("UDP packet sent.");
+    //tatlog
+    // log_debug("UDP packet sent.");
 
     return true;
 }

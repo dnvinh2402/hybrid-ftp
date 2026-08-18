@@ -163,8 +163,9 @@ void doPut(SOCKET sock, std::string& recv_buffer, const std::string& localPath, 
     DataChannel dataChannel;
     DataChannelConfig cfg;
     cfg.localPort = 0;
-    cfg.timeout = 2000;
-    cfg.maxRetry = 5;
+    cfg.timeout   = 5000; // 5 s -- bằng với timeout phía server để tránh lệch
+    cfg.maxRetry  = 5;
+    cfg.useGBN  = true; 
     if (!dataChannel.open(cfg)) {
         std::cout << "Cannot open local UDP data channel." << std::endl;
         return;
@@ -207,6 +208,7 @@ void doGet(SOCKET sock, std::string& recv_buffer, const std::string& remoteName,
     cfg.localPort = static_cast<unsigned short>(myPort);
     cfg.timeout = 3000;
     cfg.maxRetry = 5;
+    cfg.useGBN  = true;
     if (!dataChannel.open(cfg)) {
         std::cout << "Cannot bind local UDP port " << myPort << " for download." << std::endl;
         return;
@@ -280,6 +282,7 @@ void doGetViaPasv(SOCKET sock, std::string& recv_buffer, const std::string& remo
     cfg.localPort = 0;
     cfg.timeout = 3000;
     cfg.maxRetry = 5;
+    cfg.useGBN  = true;
     if (!dataChannel.open(cfg)) {
         std::cout << "Cannot open local UDP data channel." << std::endl;
         return;
@@ -341,6 +344,7 @@ void doList(SOCKET sock, std::string& recv_buffer, const std::string& remoteDir,
     cfg.localPort = 0;
     cfg.timeout = 3000;
     cfg.maxRetry = 5;
+    cfg.useGBN  = true;
     if (!dataChannel.open(cfg)) {
         std::cout << "Cannot open local UDP data channel." << std::endl;
         return;
