@@ -590,10 +590,6 @@ int main(int argc, char *argv[])
         std::cout << greeting << std::endl;
     }
 
-    if (!fs::exists(CLIENT_ROOT))
-    {
-        fs::create_directories(CLIENT_ROOT);
-
         std::string input;
         while (true)
         {
@@ -749,9 +745,9 @@ int main(int argc, char *argv[])
 
             if (upperVerb == "QUIT")
                 break;
-        }
     }
     closesocket(sock);
     cleanup_sockets();
+
     return 0;
 }
