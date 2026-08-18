@@ -33,65 +33,85 @@ typedef int SOCKET;
 #define BUFFER_SIZE 1024
 namespace fs = std::filesystem;
 
-void init_sockets() {
+const fs::path CLIENT_ROOT = "client_files";
+
+void init_sockets()
+{
 #ifdef _WIN32
     WSADATA wsaData;
     WSAStartup(MAKEWORD(2, 2), &wsaData);
 #endif
 }
 
-void cleanup_sockets() {
+void cleanup_sockets()
+{
 #ifdef _WIN32
     WSACleanup();
 #endif
 }
 
 // Trạng thái kênh dữ liệu ở Client
-enum class Mode { NONE, ACTIVE, PASSIVE };
+enum class Mode
+{
+    NONE,
+    ACTIVE,
+    PASSIVE
+};
 Mode currentMode = Mode::NONE;
+TransferType currentType = TransferType::ASCII;
+
 std::string pasvIp;
 int pasvPort = 0;
 int activePort = 0;
 
 // receive_reply(): đọc ĐÚNG 1 dòng reply hoàn chỉnh từ server, dùng buffer
 // tích lũy sống suốt phiên (truyền theo tham chiếu). Sửa lại so với bản
-// trước: substr(0, pos) KHÔNG lấy kèm ký tự '\n' 
+// trước: substr(0, pos) KHÔNG lấy kèm ký tự '\n'
 // out_line khiến bước "xóa \r cuối dòng" bên dưới không bao giờ khớp,
 // vì back() lúc đó luôn là '\n' chứ không phải '\r'.
-bool receive_reply(SOCKET sock, std::string& recv_buffer, std::string& reply) {
+bool receive_reply(SOCKET sock, std::string &recv_buffer, std::string &reply)
+{
     reply.clear();
     char buffer[1024];
     std::string multiLineCode = ""; // Lưu mã 3 chữ số nếu gặp multi-line (ví dụ "214 ")
 
-    while (true) {
+    while (true)
+    {
         size_t pos;
-        while ((pos = recv_buffer.find('\n')) != std::string::npos) {
+        while ((pos = recv_buffer.find('\n')) != std::string::npos)
+        {
             std::string line = recv_buffer.substr(0, pos);
             recv_buffer.erase(0, pos + 1);
-            if (!line.empty() && line.back() == '\r') {
+            if (!line.empty() && line.back() == '\r')
+            {
                 line.pop_back();
             }
 
             reply += line + "\r\n";
 
             // Nếu chưa bật chế độ multi-line và dòng bắt đầu dạng "214-..."
-            if (multiLineCode.empty() && line.length() >= 4 && line[3] == '-') {
+            if (multiLineCode.empty() && line.length() >= 4 && line[3] == '-')
+            {
                 multiLineCode = line.substr(0, 3) + " "; // Chờ dòng kết thúc bắt đầu bằng "214 "
             }
 
             // Kết thúc khi:
             // 1. Là phản hồi 1 dòng đơn (single-line)
             // 2. Gặp đúng dòng cuối cùng của phản hồi multi-line
-            if (multiLineCode.empty()) {
+            if (multiLineCode.empty())
+            {
                 return true;
-            } else if (line.length() >= 4 && line.compare(0, 4, multiLineCode) == 0) {
+            }
+            else if (line.length() >= 4 && line.compare(0, 4, multiLineCode) == 0)
+            {
                 return true;
             }
         }
 
         // Nếu buffer chưa đủ 1 dòng hoàn chỉnh, đọc thêm từ Socket
         int bytes_read = recv(sock, buffer, sizeof(buffer) - 1, 0);
-        if (bytes_read <= 0) {
+        if (bytes_read <= 0)
+        {
             return false;
         }
         buffer[bytes_read] = '\0';
@@ -102,7 +122,8 @@ bool receive_reply(SOCKET sock, std::string& recv_buffer, std::string& reply) {
 // Gửi 1 lệnh FTP qua TCP rồi chờ đúng 1 dòng reply, in ra và trả về cho
 // nơi gọi tự kiểm tra mã trạng thái nếu cần (dùng cho PUT/GET nội bộ,
 // khác vòng lặp CLI chính).
-std::string sendCommandAndGetReply(SOCKET sock, std::string& recv_buffer, const std::string& command) {
+std::string sendCommandAndGetReply(SOCKET sock, std::string &recv_buffer, const std::string &command)
+{
     std::string to_send = command + "\r\n";
     send(sock, to_send.c_str(), to_send.length(), 0);
     std::string reply;
@@ -111,7 +132,7 @@ std::string sendCommandAndGetReply(SOCKET sock, std::string& recv_buffer, const 
     return reply;
 }
 
-std::string extractSha256FromReply(const std::string& reply)
+std::string extractSha256FromReply(const std::string &reply)
 {
     const std::string prefix = "213 SHA256 ";
 
@@ -132,7 +153,7 @@ std::string extractSha256FromReply(const std::string& reply)
     return digest;
 }
 
-void verifyEndToEndIntegrity(SOCKET sock, std::string& recv_buffer, const std::string& localFile, const std::string& remoteFile)
+void verifyEndToEndIntegrity(SOCKET sock, std::string &recv_buffer, const std::string &localFile, const std::string &remoteFile)
 {
     const std::string localDigest = SHA256::hashFile(localFile);
 
@@ -171,14 +192,17 @@ void verifyEndToEndIntegrity(SOCKET sock, std::string& recv_buffer, const std::s
 }
 
 // Bóc tách IP + port từ reply 227 của PASV: "227 ... (h1,h2,h3,h4,p1,p2)."
-bool parsePasvResponse(const std::string& response, std::string& outIp, int& outPort) {
+bool parsePasvResponse(const std::string &response, std::string &outIp, int &outPort)
+{
     size_t start = response.find('(');
     size_t end = response.find(')');
-    if (start == std::string::npos || end == std::string::npos) return false;
+    if (start == std::string::npos || end == std::string::npos)
+        return false;
 
     std::string data = response.substr(start + 1, end - start - 1);
     int h1, h2, h3, h4, p1, p2;
-    if (sscanf(data.c_str(), "%d,%d,%d,%d,%d,%d", &h1, &h2, &h3, &h4, &p1, &p2) != 6) return false;
+    if (sscanf(data.c_str(), "%d,%d,%d,%d,%d,%d", &h1, &h2, &h3, &h4, &p1, &p2) != 6)
+        return false;
 
     outIp = std::to_string(h1) + "." + std::to_string(h2) + "." + std::to_string(h3) + "." + std::to_string(h4);
     outPort = p1 * 256 + p2;
@@ -188,17 +212,19 @@ bool parsePasvResponse(const std::string& response, std::string& outIp, int& out
 // Lấy IP local của CHÍNH client (theo góc nhìn của kết nối TCP hiện tại) --
 // dùng để điền vào lệnh PORT gửi cho server, y hệt cách server dùng
 // getsockname() cho PASV.
-std::string getLocalIp(SOCKET sock) {
+std::string getLocalIp(SOCKET sock)
+{
     sockaddr_in localAddr{};
     socklen_t len = sizeof(localAddr);
-    getsockname(sock, (struct sockaddr*)&localAddr, &len);
+    getsockname(sock, (struct sockaddr *)&localAddr, &len);
     char ipBuf[INET_ADDRSTRLEN];
     inet_ntop(AF_INET, &localAddr.sin_addr, ipBuf, sizeof(ipBuf));
     return std::string(ipBuf);
 }
 
 // Dựng chuỗi tham số PORT: "h1,h2,h3,h4,p1,p2"
-std::string formatPortArg(const std::string& ip, int port) {
+std::string formatPortArg(const std::string &ip, int port)
+{
     int h1, h2, h3, h4;
     sscanf(ip.c_str(), "%d.%d.%d.%d", &h1, &h2, &h3, &h4);
     int p1 = port / 256, p2 = port % 256;
@@ -206,16 +232,25 @@ std::string formatPortArg(const std::string& ip, int port) {
            std::to_string(h4) + "," + std::to_string(p1) + "," + std::to_string(p2);
 }
 
-void doPut(SOCKET sock, std::string& recv_buffer, const std::string& localPath, std::string remoteName, std::string cmdVerb = "STOR") {
-    if (!fs::exists(localPath) || !fs::is_regular_file(localPath)) {
+void doPut(SOCKET sock, std::string &recv_buffer, std::string &localPath, std::string remoteName, std::string cmdVerb = "STOR")
+{
+    if (!fs::exists(localPath) && fs::exists(CLIENT_ROOT / localPath))
+    {
+        localPath = (CLIENT_ROOT / localPath).string();
+    }
+    if (!fs::exists(localPath) || !fs::is_regular_file(localPath))
+    {
         std::cout << "Local file not found: " << localPath << std::endl;
         return;
     }
-    if (remoteName.empty()) remoteName = fs::path(localPath).filename().string();
+    if (remoteName.empty())
+        remoteName = fs::path(localPath).filename().string();
 
     std::string pasvReply = sendCommandAndGetReply(sock, recv_buffer, "PASV");
-    std::string serverIp; int serverPort;
-    if (pasvReply.rfind("227", 0) != 0 || !parsePasvResponse(pasvReply, serverIp, serverPort)) {
+    std::string serverIp;
+    int serverPort;
+    if (pasvReply.rfind("227", 0) != 0 || !parsePasvResponse(pasvReply, serverIp, serverPort))
+    {
         std::cout << "PASV failed, cannot upload." << std::endl;
         return;
     }
@@ -225,14 +260,16 @@ void doPut(SOCKET sock, std::string& recv_buffer, const std::string& localPath, 
     cfg.localPort = 0;
     cfg.timeout = 2000;
     cfg.maxRetry = 5;
-    if (!dataChannel.open(cfg)) {
+    if (!dataChannel.open(cfg))
+    {
         std::cout << "Cannot open local UDP data channel." << std::endl;
         return;
     }
 
     // Gửi đúng câu lệnh STOR / STOU / APPE tùy thuộc vào yêu cầu
     std::string storReply = sendCommandAndGetReply(sock, recv_buffer, cmdVerb + " " + remoteName);
-    if (storReply.rfind("150", 0) != 0) {
+    if (storReply.rfind("150", 0) != 0)
+    {
         dataChannel.close();
         return;
     }
@@ -241,7 +278,8 @@ void doPut(SOCKET sock, std::string& recv_buffer, const std::string& localPath, 
     bool ok = dataChannel.sendFile(localPath, serverIp, static_cast<unsigned short>(serverPort));
     dataChannel.close();
 
-    if (!ok) {
+    if (!ok)
+    {
         std::cout << "Upload failed at UDP layer." << std::endl;
         return;
     }
@@ -262,8 +300,11 @@ void doPut(SOCKET sock, std::string& recv_buffer, const std::string& localPath, 
         }
     }
 }
-void doGet(SOCKET sock, std::string& recv_buffer, const std::string& remoteName, std::string localPath) {
-    if (localPath.empty()) {
+void doGet(SOCKET sock, std::string &recv_buffer, const std::string &remoteName, std::string localPath)
+{
+    fs::create_directories(CLIENT_ROOT);
+    if (localPath.empty())
+    {
         fs::create_directories("client");
         localPath = (fs::path("client") / remoteName).string();
     }
@@ -278,19 +319,22 @@ void doGet(SOCKET sock, std::string& recv_buffer, const std::string& remoteName,
     cfg.localPort = static_cast<unsigned short>(myPort);
     cfg.timeout = 3000;
     cfg.maxRetry = 5;
-    if (!dataChannel.open(cfg)) {
+    if (!dataChannel.open(cfg))
+    {
         std::cout << "Cannot bind local UDP port " << myPort << " for download." << std::endl;
         return;
     }
 
     std::string portReply = sendCommandAndGetReply(sock, recv_buffer, "PORT " + formatPortArg(myIp, myPort));
-    if (portReply.rfind("200", 0) != 0) {
+    if (portReply.rfind("200", 0) != 0)
+    {
         dataChannel.close();
         return;
     }
 
     std::string retrReply = sendCommandAndGetReply(sock, recv_buffer, "RETR " + remoteName);
-    if (retrReply.rfind("150", 0) != 0) {
+    if (retrReply.rfind("150", 0) != 0)
+    {
         dataChannel.close();
         return;
     }
@@ -298,7 +342,8 @@ void doGet(SOCKET sock, std::string& recv_buffer, const std::string& remoteName,
     log_info("Downloading " + remoteName + " ...");
     bool ok = dataChannel.receiveFile();
 
-    if (!ok) {
+    if (!ok)
+    {
         dataChannel.close();
         std::cout << "Download failed at UDP layer (xem log RDT phia tren)." << std::endl;
         return;
@@ -308,16 +353,19 @@ void doGet(SOCKET sock, std::string& recv_buffer, const std::string& remoteName,
     // vì close() sẽ delete đối tượng FileReceiver bên trong -- gọi
     // getReceiveTransferSession() SAU close() là truy cập con trỏ đã bị
     // xóa (dangling pointer), gây lỗi Segmentation fault.
-    const TransferSession& recvInfo = dataChannel.getReceiveTransferSession();
+    const TransferSession &recvInfo = dataChannel.getReceiveTransferSession();
     fs::path receivedPath = fs::path("server_files") / recvInfo.fileName;
 
     dataChannel.close();
     std::error_code ec;
     fs::rename(receivedPath, localPath, ec);
-    if (ec) {
+    if (ec)
+    {
         std::cout << "Downloaded but could not move to " << localPath
                   << " (con o " << receivedPath.string() << ")" << std::endl;
-    } else {
+    }
+    else
+    {
         std::cout << "Saved to " << localPath << std::endl;
     }
 
@@ -341,15 +389,19 @@ void doGet(SOCKET sock, std::string& recv_buffer, const std::string& remoteName,
 // được địa chỉ client trước khi bắt đầu gửi (khớp receiveHandshake() mới
 // thêm ở server).
 // ---------------------------------------------------------------------
-void doGetViaPasv(SOCKET sock, std::string& recv_buffer, const std::string& remoteName, std::string localPath) {
-    if (localPath.empty()) { // SỬA ĐOẠN NÀY: Nếu localPath trống, tự gán đường dẫn vào thư mục "client/"
+void doGetViaPasv(SOCKET sock, std::string &recv_buffer, const std::string &remoteName, std::string localPath)
+{
+    if (localPath.empty())
+    { // SỬA ĐOẠN NÀY: Nếu localPath trống, tự gán đường dẫn vào thư mục "client/"
         fs::create_directories("client");
         localPath = (fs::path("client") / remoteName).string();
     }
 
     std::string pasvReply = sendCommandAndGetReply(sock, recv_buffer, "PASV");
-    std::string serverIp; int serverPort;
-    if (pasvReply.rfind("227", 0) != 0 || !parsePasvResponse(pasvReply, serverIp, serverPort)) {
+    std::string serverIp;
+    int serverPort;
+    if (pasvReply.rfind("227", 0) != 0 || !parsePasvResponse(pasvReply, serverIp, serverPort))
+    {
         std::cout << "PASV failed, cannot download." << std::endl;
         return;
     }
@@ -359,7 +411,8 @@ void doGetViaPasv(SOCKET sock, std::string& recv_buffer, const std::string& remo
     cfg.localPort = 0;
     cfg.timeout = 3000;
     cfg.maxRetry = 5;
-    if (!dataChannel.open(cfg)) {
+    if (!dataChannel.open(cfg))
+    {
         std::cout << "Cannot open local UDP data channel." << std::endl;
         return;
     }
@@ -369,7 +422,8 @@ void doGetViaPasv(SOCKET sock, std::string& recv_buffer, const std::string& remo
     std::string retrReply;
     receive_reply(sock, recv_buffer, retrReply);
     std::cout << retrReply << std::endl;
-    if (retrReply.rfind("150", 0) != 0) {
+    if (retrReply.rfind("150", 0) != 0)
+    {
         dataChannel.close();
         return;
     }
@@ -382,21 +436,25 @@ void doGetViaPasv(SOCKET sock, std::string& recv_buffer, const std::string& remo
     log_info("Downloading (PASV) " + remoteName + " ...");
     bool ok = dataChannel.receiveFile();
 
-    if (!ok) {
+    if (!ok)
+    {
         dataChannel.close();
         std::cout << "Download failed at UDP layer (xem log RDT phia tren)." << std::endl;
         return;
     }
 
-    const TransferSession& recvInfo = dataChannel.getReceiveTransferSession();
+    const TransferSession &recvInfo = dataChannel.getReceiveTransferSession();
     fs::path receivedPath = fs::path("server_files") / recvInfo.fileName;
     dataChannel.close();
 
     std::error_code ec;
     fs::rename(receivedPath, localPath, ec);
-    if (ec) {
+    if (ec)
+    {
         std::cout << "Downloaded but could not move to " << localPath << std::endl;
-    } else {
+    }
+    else
+    {
         std::cout << "Saved to " << localPath << std::endl;
     }
 
@@ -414,11 +472,13 @@ void doGetViaPasv(SOCKET sock, std::string& recv_buffer, const std::string& remo
     }
 }
 
-
-void doList(SOCKET sock, std::string& recv_buffer, const std::string& remoteDir, std::string cmdVerb = "LIST") {
+void doList(SOCKET sock, std::string &recv_buffer, const std::string &remoteDir, std::string cmdVerb = "LIST")
+{
     std::string pasvReply = sendCommandAndGetReply(sock, recv_buffer, "PASV");
-    std::string serverIp; int serverPort;
-    if (pasvReply.rfind("227", 0) != 0 || !parsePasvResponse(pasvReply, serverIp, serverPort)) {
+    std::string serverIp;
+    int serverPort;
+    if (pasvReply.rfind("227", 0) != 0 || !parsePasvResponse(pasvReply, serverIp, serverPort))
+    {
         std::cout << "PASV failed, cannot list." << std::endl;
         return;
     }
@@ -428,7 +488,8 @@ void doList(SOCKET sock, std::string& recv_buffer, const std::string& remoteDir,
     cfg.localPort = 0;
     cfg.timeout = 3000;
     cfg.maxRetry = 5;
-    if (!dataChannel.open(cfg)) {
+    if (!dataChannel.open(cfg))
+    {
         std::cout << "Cannot open local UDP data channel." << std::endl;
         return;
     }
@@ -439,7 +500,8 @@ void doList(SOCKET sock, std::string& recv_buffer, const std::string& remoteDir,
     std::string listReply;
     receive_reply(sock, recv_buffer, listReply);
     std::cout << listReply << std::endl;
-    if (listReply.rfind("150", 0) != 0) {
+    if (listReply.rfind("150", 0) != 0)
+    {
         dataChannel.close();
         return;
     }
@@ -447,13 +509,14 @@ void doList(SOCKET sock, std::string& recv_buffer, const std::string& remoteDir,
     dataChannel.sendHandshake(serverIp, static_cast<unsigned short>(serverPort));
 
     bool ok = dataChannel.receiveFile();
-    if (!ok) {
+    if (!ok)
+    {
         dataChannel.close();
         std::cout << cmdVerb + " failed at UDP layer." << std::endl;
         return;
     }
 
-    const TransferSession& recvInfo = dataChannel.getReceiveTransferSession();
+    const TransferSession &recvInfo = dataChannel.getReceiveTransferSession();
     fs::path receivedPath = fs::path("server_files") / recvInfo.fileName;
     dataChannel.close();
 
@@ -466,19 +529,24 @@ void doList(SOCKET sock, std::string& recv_buffer, const std::string& remoteDir,
     fs::remove(receivedPath, ec);
 
     std::string finalReply;
-    if (receive_reply(sock, recv_buffer, finalReply)) {
+    if (receive_reply(sock, recv_buffer, finalReply))
+    {
         std::cout << finalReply << std::endl;
     }
 }
 
-int main(int argc, char* argv[]) {
+int main(int argc, char *argv[])
+{
     init_sockets();
-
+    fs::create_directories(CLIENT_ROOT);
     // std::string server_ip = (argc >= 2) ? argv[1] : "127.0.0.1";
     std::string server_ip;
-    if (argc >= 2) {
+    if (argc >= 2)
+    {
         server_ip = argv[1];
-    } else {
+    }
+    else
+    {
         std::cout << "Nhap dia chi IP cua Server (vi du: 192.168.1.15): ";
         std::cin >> server_ip;
         std::cin.ignore(); // Xóa ký tự newline thừa trong bộ đệm cin
@@ -486,7 +554,8 @@ int main(int argc, char* argv[]) {
     int server_port = (argc >= 3) ? std::atoi(argv[2]) : 2121;
 
     SOCKET sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock == INVALID_SOCKET) {
+    if (sock == INVALID_SOCKET)
+    {
         log_error("Socket creation failed.");
         cleanup_sockets();
         return 1;
@@ -495,7 +564,8 @@ int main(int argc, char* argv[]) {
     sockaddr_in server_addr{};
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(server_port);
-    if (inet_pton(AF_INET, server_ip.c_str(), &server_addr.sin_addr) <= 0) {
+    if (inet_pton(AF_INET, server_ip.c_str(), &server_addr.sin_addr) <= 0)
+    {
         log_error("Invalid server IP address: " + server_ip);
         closesocket(sock);
         cleanup_sockets();
@@ -503,7 +573,8 @@ int main(int argc, char* argv[]) {
     }
 
     log_info("Connecting to " + server_ip + ":" + std::to_string(server_port) + "...");
-    if (connect(sock, (struct sockaddr*)&server_addr, sizeof(server_addr)) == SOCKET_ERROR) {
+    if (connect(sock, (struct sockaddr *)&server_addr, sizeof(server_addr)) == SOCKET_ERROR)
+    {
         log_error("Connection failed. Is the server running?");
         closesocket(sock);
         cleanup_sockets();
@@ -514,115 +585,172 @@ int main(int argc, char* argv[]) {
     std::string recv_buffer;
 
     std::string greeting;
-    if (receive_reply(sock, recv_buffer, greeting)) {
+    if (receive_reply(sock, recv_buffer, greeting))
+    {
         std::cout << greeting << std::endl;
     }
 
-    std::string input;
-    while (true) {
-        std::cout << "ftp> ";
-        if (!std::getline(std::cin, input)) break;
-        if (input.empty()) continue;
+    if (!fs::exists(CLIENT_ROOT))
+    {
+        fs::create_directories(CLIENT_ROOT);
 
-        std::istringstream iss(input);
-        std::string verb; iss >> verb;
-        std::string upperVerb = verb;
-        for (auto& c : upperVerb) c = toupper(c);
+        std::string input;
+        while (true)
+        {
+            std::cout << "ftp> ";
+            if (!std::getline(std::cin, input))
+                break;
+            if (input.empty())
+                continue;
 
+            std::istringstream iss(input);
+            std::string verb;
+            iss >> verb;
+            std::string upperVerb = verb;
+            for (auto &c : upperVerb)
+                c = toupper(c);
 
-        if (upperVerb == "PUT") {
-            std::string localPath, remoteName;
-            iss >> localPath >> remoteName;
-            if (localPath.empty()) {
-                std::cout << "Usage: put <local_file> [remote_name]" << std::endl;
+            if (upperVerb == "PUT")
+            {
+                std::string localPath, remoteName;
+                iss >> localPath >> remoteName;
+                if (localPath.empty())
+                {
+                    std::cout << "Usage: put <local_file> [remote_name]" << std::endl;
+                    continue;
+                }
+                doPut(sock, recv_buffer, localPath, remoteName);
                 continue;
             }
-            doPut(sock, recv_buffer, localPath, remoteName);
-            continue;
-        }
 
-        if (upperVerb == "LS") {
-            std::string dir; iss >> dir;
-            doList(sock, recv_buffer, dir);
-            continue;
-        }
-
-        if (upperVerb == "GET") {
-            std::string remoteName, localPath;
-            iss >> remoteName >> localPath;
-            if (remoteName.empty()) {
-                std::cout << "Usage: get <remote_file> [local_name]" << std::endl;
+            if (upperVerb == "LS")
+            {
+                std::string dir;
+                iss >> dir;
+                doList(sock, recv_buffer, dir);
                 continue;
             }
-            doGet(sock, recv_buffer, remoteName, localPath);
-            continue;
-        }
 
-        if (upperVerb == "GETP") {
-            std::string remoteName, localPath;
-            iss >> remoteName >> localPath;
-            if (remoteName.empty()) {
-                std::cout << "Usage: getp <remote_file> [local_name]" << std::endl;
+            if (upperVerb == "GET")
+            {
+                std::string remoteName, localPath;
+                iss >> remoteName >> localPath;
+                if (remoteName.empty())
+                {
+                    std::cout << "Usage: get <remote_file> [local_name]" << std::endl;
+                    continue;
+                }
+                doGet(sock, recv_buffer, remoteName, localPath);
                 continue;
             }
-            doGetViaPasv(sock, recv_buffer, remoteName, localPath);
-            continue;
-        }
 
-        if (upperVerb == "PASV") {
-            std::string reply = sendCommandAndGetReply(sock, recv_buffer, "PASV");
-            if (reply.rfind("227", 0) == 0 && parsePasvResponse(reply, pasvIp, pasvPort)) {
-                currentMode = Mode::PASSIVE;
-            }
-            continue;
-        }
-
-      
-        if (upperVerb == "RETR") {
-            std::string arg; iss >> arg;
-            if (currentMode == Mode::PASSIVE) {
-                doGetViaPasv(sock, recv_buffer, arg, "");
-            } else {
-                doGet(sock, recv_buffer, arg, "");
-            }
-            currentMode = Mode::NONE;
-            continue;
-        }
-
-        if (upperVerb == "LIST" || upperVerb == "NLST") {
-            std::string arg; iss >> arg;
-            doList(sock, recv_buffer, arg, upperVerb); // Truyền đúng LIST hoặc NLST
-            currentMode = Mode::NONE;
-            continue;
-        }
-
-        if (upperVerb == "STOR" || upperVerb == "STOU" || upperVerb == "APPE") {
-            std::string arg; iss >> arg;
-            if (arg.empty()) {
-                std::cout << "Usage: " << verb << " <filename>" << std::endl;
+            if (upperVerb == "GETP")
+            {
+                std::string remoteName, localPath;
+                iss >> remoteName >> localPath;
+                if (remoteName.empty())
+                {
+                    std::cout << "Usage: getp <remote_file> [local_name]" << std::endl;
+                    continue;
+                }
+                doGetViaPasv(sock, recv_buffer, remoteName, localPath);
                 continue;
             }
-            // Truyền đúng tên lệnh STOR / STOU / APPE vào doPut
-            doPut(sock, recv_buffer, arg, "", upperVerb);
-            currentMode = Mode::NONE;
-            continue;
-        }
-        std::string to_send = input + "\r\n";
-        if (send(sock, to_send.c_str(), to_send.length(), 0) == SOCKET_ERROR) {
-            log_error("Failed to send command. Connection may be lost.");
-            break;
-        }
 
-        std::string reply;
-        if (!receive_reply(sock, recv_buffer, reply)) {
-            log_error("Server closed the connection");
-            break;
-        }
-        std::cout << reply << std::endl;
+            if (upperVerb == "PASV")
+            {
+                std::string reply = sendCommandAndGetReply(sock, recv_buffer, "PASV");
+                if (reply.rfind("227", 0) == 0 && parsePasvResponse(reply, pasvIp, pasvPort))
+                {
+                    currentMode = Mode::PASSIVE;
+                }
+                continue;
+            }
 
-        if (upperVerb == "QUIT") break;
+            if (upperVerb == "TYPE")
+            {
+                std::string arg;
+                iss >> arg;
+                std::string upperArg = arg;
+                for (auto &c : upperArg)
+                    c = toupper(c);
+
+                if (upperArg != "A" && upperArg != "I")
+                {
+                    std::cout << "Usage: TYPE A (ASCII) or TYPE I (Binary)" << std::endl;
+                    continue;
+                }
+
+                // Gửi lệnh TYPE tới Server và nhận phản hồi
+                std::string reply = sendCommandAndGetReply(sock, recv_buffer, "TYPE " + upperArg);
+                std::cout << reply;
+
+                // Nếu Server xác nhận thành công (mã 200), cập nhật trạng thái ở Client (nếu có biến lưu currentType)
+                if (reply.rfind("200", 0) == 0)
+                {
+                    currentType = (upperArg == "A") ? TransferType::ASCII : TransferType::BINARY;
+                }
+                continue;
+            }
+
+            if (upperVerb == "RETR")
+            {
+                std::string arg;
+                iss >> arg;
+                if (currentMode == Mode::PASSIVE)
+                {
+                    doGetViaPasv(sock, recv_buffer, arg, "");
+                }
+                else
+                {
+                    doGet(sock, recv_buffer, arg, "");
+                }
+                currentMode = Mode::NONE;
+                continue;
+            }
+
+            if (upperVerb == "LIST" || upperVerb == "NLST")
+            {
+                std::string arg;
+                iss >> arg;
+                doList(sock, recv_buffer, arg, upperVerb); // Truyền đúng LIST hoặc NLST
+                currentMode = Mode::NONE;
+                continue;
+            }
+
+            if (upperVerb == "STOR" || upperVerb == "STOU" || upperVerb == "APPE")
+            {
+                std::string arg;
+                iss >> arg;
+                if (arg.empty())
+                {
+                    std::cout << "Usage: " << verb << " <filename>" << std::endl;
+                    continue;
+                }
+                // Truyền đúng tên lệnh STOR / STOU / APPE vào doPut
+                doPut(sock, recv_buffer, arg, "", upperVerb);
+                currentMode = Mode::NONE;
+                continue;
+            }
+            std::string to_send = input + "\r\n";
+            if (send(sock, to_send.c_str(), to_send.length(), 0) == SOCKET_ERROR)
+            {
+                log_error("Failed to send command. Connection may be lost.");
+                break;
+            }
+
+            std::string reply;
+            if (!receive_reply(sock, recv_buffer, reply))
+            {
+                log_error("Server closed the connection");
+                break;
+            }
+            std::cout << reply << std::endl;
+
+            if (upperVerb == "QUIT")
+                break;
+        }
     }
-
     closesocket(sock);
     cleanup_sockets();
     return 0;

@@ -4,6 +4,7 @@
 #include <string>
 #include "data_channel_config.h"
 #include "transfer_session.h"
+#include "../common/protocol.h"
 class UDPSocket;
 class RDTSender;
 class RDTReceiver;
@@ -23,7 +24,8 @@ public:
 
     bool sendFile(const std::string &file,
                   const std::string &ip,
-                  unsigned short port);
+                  unsigned short port,
+                TransferType type = TransferType::BINARY);
 
     bool receiveFile();
     // Chờ ĐÚNG 1 gói "chào hỏi" (SYN) từ client, dùng cho hướng PASV+RETR/LIST
@@ -41,7 +43,12 @@ public:
     bool isBusy() const;
     const TransferSession &getTransferSession() const;      // session của lần GỬI gần nhất (RETR)
     const TransferSession &getReceiveTransferSession() const; // session của lần NHẬN gần nhất (STOR)
-
+    
+    // Trả về số hiệu socket UDP thật (native OS fd) đang dùng, -1 nếu
+    // chưa mở kênh. Dùng để "chứng minh" mỗi session sở hữu 1 tài nguyên
+    // OS hoàn toàn riêng biệt -- phục vụ mục đích giám sát/isolation,
+    // không ảnh hưởng logic gửi/nhận.
+    int getSocketFd() const;
 private:
     UDPSocket *socket;
 

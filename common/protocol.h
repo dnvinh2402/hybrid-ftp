@@ -111,6 +111,8 @@ struct ClientSession {
     DataConnMode dataMode = DataConnMode::NONE;
     std::string dataIp;
     int dataPort = 0;
+    int pasvListenFd = -1;               // Socket lắng nghe PASV riêng của session
+    int dataSocketFd = -1;               // Socket truyền nhận dữ liệu thực tế
  
     std::string renameFrom; // ho tro RNFR/RNTO
 

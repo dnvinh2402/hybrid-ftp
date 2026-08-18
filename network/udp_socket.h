@@ -46,6 +46,8 @@ public:
 
     void close();
     bool setReceiveTimeout(int milliseconds);
+
+    SOCKET getSocketFd() const { return socketFd; }
 };
 
 #endif
