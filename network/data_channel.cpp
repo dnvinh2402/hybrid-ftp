@@ -6,7 +6,9 @@
 #include "file_sender.h"
 #include "file_receiver.h"
 #include "packet_builder.h"
-
+#include "../common/protocol.h"
+#include <fstream>
+#include <cstdio>
 #ifdef _WIN32
 #include <winsock2.h>
 #pragma comment(lib, "ws2_32.lib")
@@ -136,10 +138,29 @@ void DataChannel::close()
     opened = false;
     log_info("--------------------------------");
 }
+
+static bool createCRLFFile(const std::string &srcPath, const std::string &destPath)
+{
+    std::ifstream in(srcPath, std::ios::binary);
+    std::ofstream out(destPath, std::ios::binary);
+    if (!in.is_open() || !out.is_open()) return false;
+    
+    char c;
+    char prev = 0;
+    while (in.get(c)) {
+        if (c =='\n' && prev != '\r') {
+            out.put('\r'); // Tự động chèn \r trước \n nếu chưa có
+        }
+        out.put(c);
+        prev = c;
+    }
+    return true;
+}
 bool DataChannel::sendFile(
     const std::string &file,
     const std::string &ip,
-    unsigned short port)
+    unsigned short port,
+    TransferType type)
 {
     if (!opened || fileSender == nullptr)
     {
@@ -154,7 +175,25 @@ bool DataChannel::sendFile(
     }
 
     busy = true;
-    bool success = fileSender->sendFile(file, ip, port);
+    bool success = false;
+
+    if (type == TransferType::ASCII) {
+        // Tạo file tạm với CRLF
+        std::string tempFile = file + ".tmp_ascii";
+        if (!createCRLFFile(file, tempFile)) {
+            log_error("Failed to create CRLF temporary file.");
+            busy = false;
+            return false;
+        }
+        //gửi file tạm bằng fileSender hiện có
+        success = fileSender->sendFile(tempFile, ip, port);
+
+        std::remove(tempFile.c_str()); // Xóa file tạm sau khi gửi
+    } else {
+
+        //BINARY transfer, gửi trực tiếp file gốc
+        success = fileSender->sendFile(file, ip, port);
+    }
     busy = false;
     return success;
 }
@@ -228,4 +267,10 @@ bool DataChannel::receiveHandshake(std::string &outIp, unsigned short &outPort)
     outPort = senderPort;
     log_info("Handshake OK. Client data address: " + outIp + ":" + std::to_string(outPort));
     return true;
+}
+
+int DataChannel::getSocketFd() const
+{
+    if (!opened || socket == nullptr) return -1;
+    return static_cast<int>(socket->getSocketFd());
 }

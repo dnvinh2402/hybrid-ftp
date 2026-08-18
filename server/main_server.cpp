@@ -197,7 +197,34 @@ std::string buildHelpReply(const std::string& commandArgument)
 
     return "214 " + iterator->second + "\r\n";
 }
+// Chuyển dòng sang CRLF (\r\n) khi gửi ở chế độ ASCII
+std::string convertToCRLF(const std::string& buffer) {
+    std::string result;
+    result.reserve(buffer.size() * 1.1); 
+    for (size_t i = 0; i < buffer.size(); ++i) {
+        if (buffer[i] == '\n' && (i == 0 || buffer[i - 1] != '\r')) {
+            result += "\r\n";
+        } else {
+            result += buffer[i];
+        }
+    }
+    return result;
+}
 
+// chuyênr đổi dòng CRLF (\r\n) sang LF (\n) khi nhận ở chế độ ASCII
+std::string convertFromCRLF(const std::string& buffer) {
+    std::string result;
+    result.reserve(buffer.size());
+    for (size_t i = 0; i < buffer.size(); ++i) {
+        if (buffer[i] == '\r' && i + 1 < buffer.size() && buffer[i + 1] == '\n') {
+            result += '\n';
+            ++i; 
+        } else {
+            result += buffer[i];
+        }
+    }
+    return result;
+}
 void updateTransferState(ClientSession& session, bool transferActive)
 {
     session.transferActive.store(transferActive);
@@ -208,6 +235,23 @@ void updateTransferState(ClientSession& session, bool transferActive)
     }
     g_sessionRegistry.setTransferActive(session.sessionId, transferActive);
     g_sessionRegistry.printSessions();
+}
+
+static bool convertCRLFToLFInFile(const fs::path& srcPath, const fs::path& dstPath) {
+    std::ifstream in(srcPath, std::ios::binary);
+    std::ofstream out(dstPath, std::ios::binary);
+    if (!in.is_open() || !out.is_open()) return false;
+
+    char c;
+    while (in.get(c)) {
+        if (c == '\r') {
+            if (in.peek() == '\n') {
+                in.get(c); // Bỏ qua '\r', lấy ký tự '\n' tiếp theo để ghi
+            }
+        }
+        out.put(c);
+    }
+    return true;
 }
 
 // Hàm xử lý phân tích và phản hồi lệnh FTP
@@ -485,9 +529,17 @@ void handle_client_command(SOCKET client_socket, ClientSession &session, DataCha
                 break;
             }
 
+            // Ghi lại số hiệu socket THẬT đang dùng vào session -- để
+            // chứng minh mỗi session sở hữu 1 tài nguyên OS hoàn toàn
+            // riêng biệt (phục vụ "fully isolated session"), có thể xem
+            // qua STAT khi có nhiều client kết nối cùng lúc.
+            session.dataSocketFd = dataChannel.getSocketFd();
+            session.pasvListenFd = -1; // không áp dụng cho ACTIVE mode
+
             session.dataMode = DataConnMode::ACTIVE;
             session.dataIp = ip;
             session.dataPort = port;
+
             log_info("Client requested ACTIVE mode -> " + ip + ":" + std::to_string(port));
             send_reply(client_socket, FTPStatus::OK_200);
             break;
@@ -500,8 +552,11 @@ void handle_client_command(SOCKET client_socket, ClientSession &session, DataCha
             std::string ip = getLocalIp(client_socket);
 
             if (dataChannel.isOpened())
+            {
                 dataChannel.close();
-
+                session.dataSocketFd = -1;
+                session.pasvListenFd = -1;
+            }
             bool opened = false;
             int chosenPort = 0;
             // Thử tối đa 10 lần vì có thể trùng port với client khác
@@ -524,6 +579,12 @@ void handle_client_command(SOCKET client_socket, ClientSession &session, DataCha
                 send_reply(client_socket, FTPStatus::ERR_425);
                 break;
             }
+
+            // Cùng 1 fd -- PASV chỉ có 1 socket vừa lắng nghe vừa truyền
+            // dữ liệu (khác TCP, không có accept() riêng), nhưng lưu vào
+            // 2 field tên khác nhau để phản ánh đúng VAI TRÒ trong session.
+            session.dataSocketFd = dataChannel.getSocketFd();
+            session.pasvListenFd = session.dataSocketFd;
 
             session.dataMode = DataConnMode::PASSIVE;
             session.dataIp = ip;
@@ -575,11 +636,29 @@ void handle_client_command(SOCKET client_socket, ClientSession &session, DataCha
             }
 
             std::error_code ec;
-            fs::rename(receivedPath, *dest, ec);
-            if (ec)
+
+            // Xử lý chuyển đổi theo TransferType
+            if (session.type == TransferType::ASCII)
             {
-                send_reply(client_socket, FTPStatus::ERR_550);
-                break;
+                // Chuyển \r\n thành \n và lưu vào dest
+                if (!convertCRLFToLFInFile(receivedPath, *dest))
+                {
+                    log_error("STOR: Failed to convert ASCII CRLF to LF");
+                    send_reply(client_socket, FTPStatus::ERR_550);
+                    break;
+                }
+                // Xóa file tạm trong server_files sau khi hoàn tất
+                fs::remove(receivedPath, ec);
+            }
+            else
+            {
+                // BINARY mode: Đổi tên/di chuyển trực tiếp byte thô
+                fs::rename(receivedPath, *dest, ec);
+                if (ec)
+                {
+                    send_reply(client_socket, FTPStatus::ERR_550);
+                    break;
+                }
             }
 
             send_reply(client_socket, FTPStatus::OK_226);
@@ -625,7 +704,7 @@ void handle_client_command(SOCKET client_socket, ClientSession &session, DataCha
             }
 
             updateTransferState(session, true);
-            bool ok = dataChannel.sendFile(target->string(), destIp, destPort);
+            bool ok = dataChannel.sendFile(target->string(), destIp, destPort, session.type);
             updateTransferState(session, false);
             send_reply(client_socket, ok ? FTPStatus::OK_226 : FTPStatus::ERR_426);
             break;
@@ -1162,7 +1241,7 @@ int main()
         SOCKET client_socket = accept(server_fd, (struct sockaddr *)&client_addr, &addrlen);
         if (client_socket == INVALID_SOCKET)
         {
-            log_error("Accept connection failed.");
+            log_error("Accept connection failed.");  
             continue;
         }
 
