@@ -103,6 +103,130 @@ std::string toVirtualPath(const fs::path &realPath)
     return "/" + rel.generic_string();
 }
 
+// Chuyển quyền truy cập của file/thư mục thành chuỗi rwxrwxrwx.
+// Ví dụ: rw-r--r--, rwxr-xr-x.
+std::string getPermissionString(const fs::path &path)
+{
+    std::error_code ec;
+
+    fs::perms permissions =
+        fs::status(path, ec).permissions();
+
+    if (ec)
+    {
+        return "---------";
+    }
+
+    std::string result;
+
+    result +=
+        (permissions & fs::perms::owner_read)
+                != fs::perms::none
+            ? 'r'
+            : '-';
+
+    result +=
+        (permissions & fs::perms::owner_write)
+                != fs::perms::none
+            ? 'w'
+            : '-';
+
+    result +=
+        (permissions & fs::perms::owner_exec)
+                != fs::perms::none
+            ? 'x'
+            : '-';
+
+    result +=
+        (permissions & fs::perms::group_read)
+                != fs::perms::none
+            ? 'r'
+            : '-';
+
+    result +=
+        (permissions & fs::perms::group_write)
+                != fs::perms::none
+            ? 'w'
+            : '-';
+
+    result +=
+        (permissions & fs::perms::group_exec)
+                != fs::perms::none
+            ? 'x'
+            : '-';
+
+    result +=
+        (permissions & fs::perms::others_read)
+                != fs::perms::none
+            ? 'r'
+            : '-';
+
+    result +=
+        (permissions & fs::perms::others_write)
+                != fs::perms::none
+            ? 'w'
+            : '-';
+
+    result +=
+        (permissions & fs::perms::others_exec)
+                != fs::perms::none
+            ? 'x'
+            : '-';
+
+    return result;
+}
+
+
+// Tạo một dòng chi tiết cho lệnh LIST.
+// Format:
+// <type> <permissions> <size> <name>
+//
+// type:
+// d = directory
+// - = regular file
+// ? = loại khác
+std::string buildListEntry(
+    const fs::directory_entry &entry)
+{
+    char type = '?';
+
+    if (entry.is_directory())
+    {
+        type = 'd';
+    }
+    else if (entry.is_regular_file())
+    {
+        type = '-';
+    }
+
+    std::string sizeText = "-";
+
+    if (entry.is_regular_file())
+    {
+        std::error_code ec;
+
+        std::uintmax_t fileSize =
+            entry.file_size(ec);
+
+        if (!ec)
+        {
+            sizeText =
+                std::to_string(fileSize);
+        }
+    }
+
+    return std::string(1, type)
+           + " "
+           + getPermissionString(
+                 entry.path())
+           + " "
+           + sizeText
+           + " "
+           + entry.path()
+                 .filename()
+                 .string();
+}
+
 // Helper cho PORT / PASV: đọc "h1,h2,h3,h4,p1,p2" -> IP + port
 // Đây là định dạng chuẩn FTP: p_port = p1*256 + p2
 bool parsePortArg(const std::string &arg, std::string &outIp, int &outPort)
@@ -349,15 +473,43 @@ void handle_client_command(SOCKET client_socket, ClientSession &session, DataCha
             }
             break;
         }
-
         case FtpCommand::CDUP:
         {
-            auto target = resolveVirtualPath(session, "..");
-            session.currentDir = toVirtualPath(*target); // ".." luôn hợp lệ, root tự chặn tại "/"
-            send_reply(client_socket, FTPStatus::OK_250);
+            // Nếu đang ở thư mục gốc
+            // thì không đi lên nữa.
+            if (session.currentDir == "/")
+            {
+                send_reply(
+                    client_socket,
+                    FTPStatus::OK_250);
+
+                break;
+            }
+
+            auto target =
+                resolveVirtualPath(
+                    session,
+                    "..");
+
+            if (!target ||
+                !fs::is_directory(*target))
+            {
+                send_reply(
+                    client_socket,
+                    FTPStatus::ERR_550);
+
+                break;
+            }
+
+            session.currentDir =
+                toVirtualPath(*target);
+
+            send_reply(
+                client_socket,
+                FTPStatus::OK_250);
+
             break;
         }
-
         case FtpCommand::MKD:
         {
             auto target = resolveVirtualPath(session, parsed.arg);
@@ -732,10 +884,13 @@ void handle_client_command(SOCKET client_socket, ClientSession &session, DataCha
                                    ("list_" + std::to_string(session.controlSocketFd) + ".txt");
             {
                 std::ofstream listFile(tempListing);
-                for (auto &entry : fs::directory_iterator(*dirPath))
+
+                for (const auto &entry :
+                    fs::directory_iterator(*dirPath))
                 {
-                    listFile << (entry.is_directory() ? "d " : "- ")
-                             << entry.path().filename().string() << "\n";
+                    listFile
+                        << buildListEntry(entry)
+                        << "\n";
                 }
             }
 
