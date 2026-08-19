@@ -92,34 +92,34 @@ inline ParsedCommand parseLine(const std::string& line) {
 }
  
 // Trang thai phien lam viec cua 1 client
-enum class TransferType { ASCII, BINARY };              // TYPE A | I
-enum class TransferMode { STREAM, BLOCK, COMPRESSED };  // MODE S|B|C
-enum class DataConnMode { NONE, ACTIVE, PASSIVE };       // PORT | PASV
- 
-struct ClientSession {
-    int controlSocketFd = -1;
-    int sessionId = 0;
-    std::string clientIp;
- 
-    bool authenticated = false;
-    std::string username;
- 
-    std::string currentDir = "/";
-    TransferType type = TransferType::ASCII;
-    TransferMode mode = TransferMode::STREAM;
- 
-    DataConnMode dataMode = DataConnMode::NONE;
-    std::string dataIp;
-    int dataPort = 0;
-    int pasvListenFd = -1;               // Socket lắng nghe PASV riêng của session
-    int dataSocketFd = -1;               // Socket truyền nhận dữ liệu thực tế
- 
-    std::string renameFrom; // ho tro RNFR/RNTO
+    enum class TransferType { ASCII, BINARY };              // TYPE A | I
+    enum class TransferMode { STREAM, BLOCK, COMPRESSED };  // MODE S|B|C
+    enum class DataConnMode { NONE, ACTIVE, PASSIVE };       // PORT | PASV
+    
+    struct ClientSession {
+        int controlSocketFd = -1;
+        int sessionId = 0;
+        std::string clientIp;
+    
+        bool authenticated = false;
+        std::string username;
+    
+        std::string currentDir = "/";
+        TransferType type = TransferType::ASCII;
+        TransferMode mode = TransferMode::STREAM;
+    
+        DataConnMode dataMode = DataConnMode::NONE;
+        std::string dataIp;
+        int dataPort = 0;
+        int pasvListenFd = -1;               // Socket lắng nghe PASV riêng của session
+        int dataSocketFd = -1;               // Socket truyền nhận dữ liệu thực tế
+    
+        std::string renameFrom; // ho tro RNFR/RNTO
 
-    // true khi session đang truyền dữ liệu.
-    std::atomic<bool> transferActive{false};
+        // true khi session đang truyền dữ liệu.
+        std::atomic<bool> transferActive{false};
 
-    // true khi TCP control nhận lệnh ABOR.
-    std::atomic<bool> abortRequested{false};
-};
-#endif // PROTOCOL_H
+        // true khi TCP control nhận lệnh ABOR.
+        std::atomic<bool> abortRequested{false};
+    };
+    #endif // PROTOCOL_H

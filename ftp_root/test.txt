@@ -1,0 +1,1 @@
+g++ -std=c++17 -I. -Icommon -Inetwork -Iserver server/main_server.cpp server/authentication_manager.cpp server/session_registry.cpp common/*.cpp network/*.cpp -o server/server.exe -lws2_32

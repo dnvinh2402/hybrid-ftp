@@ -232,7 +232,24 @@ std::string formatPortArg(const std::string &ip, int port)
            std::to_string(h4) + "," + std::to_string(p1) + "," + std::to_string(p2);
 }
 
-void doPut(SOCKET sock, std::string &recv_buffer, std::string &localPath, std::string remoteName, std::string cmdVerb = "STOR")
+bool convertCRLFToLFInFile(const fs::path& srcPath, const fs::path& dstPath) {
+    std::ifstream in(srcPath, std::ios::binary);
+    std::ofstream out(dstPath, std::ios::binary);
+    if (!in.is_open() || !out.is_open()) return false;
+
+    char c;
+    while (in.get(c)) {
+        if (c == '\r') {
+            if (in.peek() == '\n') {
+                in.get(c); // Bỏ qua '\r', lấy ký tự '\n' tiếp theo để ghi
+            }
+        }
+        out.put(c);
+    }
+    return true;
+}
+
+void doPut(SOCKET sock, std::string &recv_buffer, std::string &localPath, std::string remoteName, std::string cmdVerb = "STOR", TransferType type = TransferType::BINARY)
 {
     if (!fs::exists(localPath) && fs::exists(CLIENT_ROOT / localPath))
     {
@@ -300,13 +317,13 @@ void doPut(SOCKET sock, std::string &recv_buffer, std::string &localPath, std::s
         }
     }
 }
-void doGet(SOCKET sock, std::string &recv_buffer, const std::string &remoteName, std::string localPath)
+void doGet(SOCKET sock, std::string &recv_buffer, const std::string &remoteName, std::string localPath, TransferType type = TransferType::BINARY)
 {
     fs::create_directories(CLIENT_ROOT);
     if (localPath.empty())
     {
-        fs::create_directories("client");
-        localPath = (fs::path("client") / remoteName).string();
+        fs::create_directories("client_files");   
+        localPath = (fs::path("client_files") / remoteName).string();
     }
 
     static std::mt19937 rng(std::random_device{}());
@@ -358,15 +375,38 @@ void doGet(SOCKET sock, std::string &recv_buffer, const std::string &remoteName,
 
     dataChannel.close();
     std::error_code ec;
-    fs::rename(receivedPath, localPath, ec);
-    if (ec)
+    if (currentType == TransferType::ASCII)
     {
-        std::cout << "Downloaded but could not move to " << localPath
-                  << " (con o " << receivedPath.string() << ")" << std::endl;
+        // ASCII Mode: Chuyển đổi định dạng xuống dòng chuẩn
+        if (convertCRLFToLFInFile(receivedPath, localPath))
+        {
+            fs::remove(receivedPath, ec);
+            std::cout << "Saved (ASCII mode) to " << localPath << std::endl;
+        }
+        else
+        {
+            // Fallback nếu chuyển đổi thất bại
+            fs::rename(receivedPath, localPath, ec);
+            std::cout << "Saved to " << localPath << std::endl;
+        }
     }
     else
     {
-        std::cout << "Saved to " << localPath << std::endl;
+        // BINARY Mode: Di chuyển file trực tiếp (Xóa file đích trước nếu đã tồn tại để tránh lỗi trên Windows)
+        if (fs::exists(localPath)) {
+            fs::remove(localPath, ec);
+        }
+
+        fs::rename(receivedPath, localPath, ec);
+        if (ec)
+        {
+            std::cout << "Downloaded but could not move to " << localPath
+                      << " (con o " << receivedPath.string() << ")" << std::endl;
+        }
+        else
+        {
+            std::cout << "Saved to " << localPath << std::endl;
+        }
     }
 
     std::string finalReply;
@@ -375,8 +415,7 @@ void doGet(SOCKET sock, std::string &recv_buffer, const std::string &remoteName,
     {
         std::cout << finalReply << std::endl;
 
-        if (finalReply.rfind("226", 0) == 0 &&
-            fs::exists(localPath))
+        if (finalReply.rfind("226", 0) == 0 && fs::exists(localPath))
         {
             verifyEndToEndIntegrity(sock, recv_buffer, localPath, remoteName);
         }
@@ -389,12 +428,16 @@ void doGet(SOCKET sock, std::string &recv_buffer, const std::string &remoteName,
 // được địa chỉ client trước khi bắt đầu gửi (khớp receiveHandshake() mới
 // thêm ở server).
 // ---------------------------------------------------------------------
-void doGetViaPasv(SOCKET sock, std::string &recv_buffer, const std::string &remoteName, std::string localPath)
-{
+void doGetViaPasv(SOCKET sock, std::string &recv_buffer, const std::string &remoteName, std::string localPath, TransferType type = TransferType::BINARY)
+{   fs::create_directories("client_files");
     if (localPath.empty())
     { // SỬA ĐOẠN NÀY: Nếu localPath trống, tự gán đường dẫn vào thư mục "client/"
-        fs::create_directories("client");
-        localPath = (fs::path("client") / remoteName).string();
+        fs::create_directories("client_files");
+        localPath = (fs::path("client_files") / remoteName).string();
+    }
+    else if (!fs::exists(localPath) && fs::exists(fs::path("client_files") / localPath))
+    {
+        localPath = (fs::path("client_files") / localPath).string();
     }
 
     std::string pasvReply = sendCommandAndGetReply(sock, recv_buffer, "PASV");
@@ -456,6 +499,36 @@ void doGetViaPasv(SOCKET sock, std::string &recv_buffer, const std::string &remo
     else
     {
         std::cout << "Saved to " << localPath << std::endl;
+    }if (currentType == TransferType::ASCII)
+    {
+        // Chế độ ASCII: Tự động chuyển đổi CRLF (\r\n) thành LF (\n)
+        if (convertCRLFToLFInFile(receivedPath, localPath))
+        {
+            fs::remove(receivedPath, ec);
+            std::cout << "Saved (ASCII mode) to " << localPath << std::endl;
+        }
+        else
+        {
+            fs::rename(receivedPath, localPath, ec);
+            std::cout << "Saved to " << localPath << std::endl;
+        }
+    }
+    else
+    {
+        // Chế độ BINARY: Copy/rename nguyên bản byte-by-byte
+        if (fs::exists(localPath)) {
+            fs::remove(localPath, ec);
+        }
+
+        fs::rename(receivedPath, localPath, ec);
+        if (ec)
+        {
+            std::cout << "Downloaded but could not move to " << localPath << std::endl;
+        }
+        else
+        {
+            std::cout << "Saved to " << localPath << std::endl;
+        }
     }
 
     std::string finalReply;
@@ -536,9 +609,9 @@ void doList(SOCKET sock, std::string &recv_buffer, const std::string &remoteDir,
 }
 
 int main(int argc, char *argv[])
-{
-    init_sockets();
-    fs::create_directories(CLIENT_ROOT);
+{   
+    fs::create_directories("client_files");
+    init_sockets();     
     // std::string server_ip = (argc >= 2) ? argv[1] : "127.0.0.1";
     std::string server_ip;
     if (argc >= 2)
@@ -615,7 +688,7 @@ int main(int argc, char *argv[])
                     std::cout << "Usage: put <local_file> [remote_name]" << std::endl;
                     continue;
                 }
-                doPut(sock, recv_buffer, localPath, remoteName);
+                doPut(sock, recv_buffer, localPath, remoteName, "STOR", currentType);
                 continue;
             }
 
@@ -649,7 +722,7 @@ int main(int argc, char *argv[])
                     std::cout << "Usage: getp <remote_file> [local_name]" << std::endl;
                     continue;
                 }
-                doGetViaPasv(sock, recv_buffer, remoteName, localPath);
+                doGetViaPasv(sock, recv_buffer, remoteName, localPath, currentType);
                 continue;
             }
 
@@ -695,11 +768,11 @@ int main(int argc, char *argv[])
                 iss >> arg;
                 if (currentMode == Mode::PASSIVE)
                 {
-                    doGetViaPasv(sock, recv_buffer, arg, "");
+                    doGetViaPasv(sock, recv_buffer, arg, "", currentType);
                 }
                 else
                 {
-                    doGet(sock, recv_buffer, arg, "");
+                    doGet(sock, recv_buffer, arg, "", currentType);
                 }
                 currentMode = Mode::NONE;
                 continue;
@@ -724,7 +797,7 @@ int main(int argc, char *argv[])
                     continue;
                 }
                 // Truyền đúng tên lệnh STOR / STOU / APPE vào doPut
-                doPut(sock, recv_buffer, arg, "", upperVerb);
+                doPut(sock, recv_buffer, arg, "", upperVerb, currentType);
                 currentMode = Mode::NONE;
                 continue;
             }

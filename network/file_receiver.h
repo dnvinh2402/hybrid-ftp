@@ -21,8 +21,12 @@ private:
 
 public:
     explicit FileReceiver(RDTReceiver &receiver);
-
-    bool receiveFile();
+    // outputDir: thư mục TẠM để ghi file trong lúc nhận -- mặc định
+    // "server_files" (giữ tương thích ngược). Server nên truyền vào 1
+    // thư mục RIÊNG THEO SESSION (vd "server_files/session_5") để 2
+    // client nhận file CÙNG TÊN cùng lúc không ghi đè/lẫn dữ liệu vào
+    // nhau -- đây chính là bug isolation đã phát hiện qua test.
+    bool receiveFile(const std::string& outputDir = "server_files");
     const TransferSession& getSession() const;
 };
 

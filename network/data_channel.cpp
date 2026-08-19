@@ -197,7 +197,7 @@ bool DataChannel::sendFile(
     busy = false;
     return success;
 }
-bool DataChannel::receiveFile()
+bool DataChannel::receiveFile(const std::string& outputDir)
 {
     if (!opened || fileReceiver == nullptr)
     {
@@ -211,7 +211,7 @@ bool DataChannel::receiveFile()
     }
 
     busy = true;
-    bool result = fileReceiver->receiveFile();
+    bool result = fileReceiver->receiveFile(outputDir);
     busy = false;
     return result;
 }

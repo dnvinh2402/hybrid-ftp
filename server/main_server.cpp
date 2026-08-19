@@ -7,6 +7,7 @@
 #include <thread>
 #include <fstream>
 #include <unordered_map>
+#include <atomic>
 #include "authentication_manager.h"
 #include "session_registry.h"
 #include "../common/sha256.h"
@@ -93,6 +94,28 @@ std::optional<fs::path> resolveVirtualPath(const ClientSession &session, const s
     return combined;
 }
 
+// Hàm tự động sinh tên file không bị trùng
+fs::path getUniquePath(const fs::path& targetPath)
+{
+    if (!fs::exists(targetPath))
+    {
+        return targetPath;
+    }
+
+    fs::path parent = targetPath.parent_path();
+    std::string stem = targetPath.stem().string();       // Tên file không chứa đuôi (vd: "picture")
+    std::string ext = targetPath.extension().string();   // Đuôi file (vd: ".png")
+
+    int counter = 1;
+    fs::path newPath;
+    do
+    {
+        newPath = parent / (stem + " (" + std::to_string(counter) + ")" + ext);
+        counter++;
+    } while (fs::exists(newPath));
+
+    return newPath;
+}
 // Chuyển 1 đường dẫn THẬT trên đĩa (đã nằm trong SERVER_ROOT) ngược lại
 // thành đường dẫn "ảo" để hiển thị / lưu vào session.currentDir.
 std::string toVirtualPath(const fs::path &realPath)
@@ -383,6 +406,7 @@ void handle_client_command(SOCKET client_socket, ClientSession &session, DataCha
 {
     log_debug("Received command: " + raw_line);
     ParsedCommand parsed = parseLine(raw_line);
+
 
     switch (parsed.cmd)
     {
@@ -747,75 +771,97 @@ void handle_client_command(SOCKET client_socket, ClientSession &session, DataCha
         }
 
         case FtpCommand::STOR:
+{
+    if (session.dataMode == DataConnMode::NONE || !dataChannel.isOpened())
+    {
+        send_reply(client_socket, FTPStatus::ERR_425);
+        break;
+    }
+    if (parsed.arg.empty())
+    {
+        send_reply(client_socket, FTPStatus::ERR_501);
+        break;
+    }
+
+    send_reply(client_socket, FTPStatus::OK_150);
+    updateTransferState(session, true);
+
+    // 1. Nhận file vào thư mục staging độc lập của session
+    std::string stagingDir = "server_files/session_" + std::to_string(session.sessionId);
+    bool ok = dataChannel.receiveFile(stagingDir);
+    updateTransferState(session, false);
+
+    if (!ok)
+    {
+        send_reply(client_socket, FTPStatus::ERR_426);
+        std::error_code cleanupEc;
+        fs::remove_all(stagingDir, cleanupEc);
+        break;
+    }
+
+    // 2. Xác định vị trí file tạm và vị trí đích
+    const TransferSession &recvInfo = dataChannel.getReceiveTransferSession();
+    fs::path receivedPath = fs::path(stagingDir) / recvInfo.fileName;
+
+    auto dest = resolveVirtualPath(session, parsed.arg);
+    if (!dest || !fs::exists(receivedPath))
+    {
+        log_error("STOR: received file not found at expected temp location.");
+        send_reply(client_socket, FTPStatus::ERR_550);
+        
+        std::error_code cleanupEc;
+        fs::remove_all(stagingDir, cleanupEc);
+        break;
+    }
+
+    // Tự động đổi tên chống ghi đè
+    fs::path finalDest = getUniquePath(*dest);
+
+    std::error_code ec;
+
+    // 3. Di chuyển file từ Staging ra thư mục thực tế theo finalDest
+    if (session.type == TransferType::ASCII)
+    {
+        // ASCII mode: Chuyển CRLF -> LF và lưu thẳng vào finalDest
+        if (!convertCRLFToLFInFile(receivedPath, finalDest))
         {
-            if (session.dataMode == DataConnMode::NONE || !dataChannel.isOpened())
-            {
-                send_reply(client_socket, FTPStatus::ERR_425);
-                break;
-            }
-            if (parsed.arg.empty())
-            {
-                send_reply(client_socket, FTPStatus::ERR_501);
-                break;
-            }
-
-            send_reply(client_socket, FTPStatus::OK_150);
-            updateTransferState(session, true);
-
-            // receiveFile() TỰ BLOCK chờ đúng theo Stop-and-Wait, tới khi
-            // nhận đủ FIN hoặc vượt quá số lần timeout liên tiếp cho phép.
-            bool ok = dataChannel.receiveFile();
-            updateTransferState(session, false);
-            if (!ok)
-            {
-                send_reply(client_socket, FTPStatus::ERR_426);
-                break;
-            }
-
-            // FileReceiver LUÔN ghi ra "server_files/<tên client tự gửi trong
-            // metadata>" (thiết kế gốc của đồng đội, không phụ thuộc thư mục
-            // ảo hiện tại của session) -- phải MỜI file đó vào đúng vị trí
-            // trong SERVER_ROOT theo tên mà lệnh STOR yêu cầu (parsed.arg).
-            const TransferSession &recvInfo = dataChannel.getReceiveTransferSession();
-            fs::path receivedPath = fs::path("server_files") / recvInfo.fileName;
-
-            auto dest = resolveVirtualPath(session, parsed.arg);
-            if (!dest || !fs::exists(receivedPath))
-            {
-                log_error("STOR: received file not found at expected temp location.");
-                send_reply(client_socket, FTPStatus::ERR_550);
-                break;
-            }
-
-            std::error_code ec;
-
-            // Xử lý chuyển đổi theo TransferType
-            if (session.type == TransferType::ASCII)
-            {
-                // Chuyển \r\n thành \n và lưu vào dest
-                if (!convertCRLFToLFInFile(receivedPath, *dest))
-                {
-                    log_error("STOR: Failed to convert ASCII CRLF to LF");
-                    send_reply(client_socket, FTPStatus::ERR_550);
-                    break;
-                }
-                // Xóa file tạm trong server_files sau khi hoàn tất
-                fs::remove(receivedPath, ec);
-            }
-            else
-            {
-                // BINARY mode: Đổi tên/di chuyển trực tiếp byte thô
-                fs::rename(receivedPath, *dest, ec);
-                if (ec)
-                {
-                    send_reply(client_socket, FTPStatus::ERR_550);
-                    break;
-                }
-            }
-
-            send_reply(client_socket, FTPStatus::OK_226);
+            log_error("STOR: Failed to convert ASCII CRLF to LF");
+            send_reply(client_socket, FTPStatus::ERR_550);
+            
+            std::error_code cleanupEc;
+            fs::remove_all(stagingDir, cleanupEc);
             break;
         }
+    }
+    else
+    {
+        // BINARY mode: Đổi tên / di chuyển file vào finalDest
+        fs::rename(receivedPath, finalDest, ec);
+        
+        // Fallback: Nếu rename bị lỗi do khác phân vùng đĩa hoặc OS lock
+        if (ec)
+        {
+            ec.clear();
+            fs::copy_file(receivedPath, finalDest, fs::copy_options::overwrite_existing, ec);
+            if (ec)
+            {
+                log_error("STOR: Failed to move binary file to destination: " + ec.message());
+                send_reply(client_socket, FTPStatus::ERR_550);
+                
+                std::error_code cleanupEc;
+                fs::remove_all(stagingDir, cleanupEc);
+                break;
+            }
+        }
+    }
+
+    // 4. Dọn dẹp sạch toàn bộ thư mục Staging của Session
+    std::error_code cleanupEc;
+    fs::remove_all(stagingDir, cleanupEc);
+
+    send_reply(client_socket, FTPStatus::OK_226);
+    break;
+}
 
         case FtpCommand::RETR:
         {
@@ -1011,7 +1057,8 @@ void handle_client_command(SOCKET client_socket, ClientSession &session, DataCha
 
             send_reply(client_socket, FTPStatus::OK_150);
             updateTransferState(session, true);
-            bool ok = dataChannel.receiveFile();
+            std::string stagingDir = "server_files/session_" + std::to_string(session.sessionId);
+            bool ok = dataChannel.receiveFile(stagingDir);
             updateTransferState(session, false);
             if (!ok)
             {
@@ -1020,7 +1067,7 @@ void handle_client_command(SOCKET client_socket, ClientSession &session, DataCha
             }
 
             const TransferSession &recvInfo = dataChannel.getReceiveTransferSession();
-            fs::path receivedPath = fs::path("server_files") / recvInfo.fileName;
+            fs::path receivedPath = fs::path(stagingDir) / recvInfo.fileName;
             auto dest = resolveVirtualPath(session, uniqueName);
             if (!dest || !fs::exists(receivedPath))
             {
@@ -1037,6 +1084,8 @@ void handle_client_command(SOCKET client_socket, ClientSession &session, DataCha
             }
 
             // Reply 226 kèm tên thật đã lưu -- client BẮT BUỘC phải đọc
+            std::error_code cleanupEc;
+            fs::remove(stagingDir, cleanupEc);
             send_reply(client_socket, "226 Transfer complete. Stored as \"" + uniqueName + "\".\r\n");
             break;
         }
@@ -1056,7 +1105,8 @@ void handle_client_command(SOCKET client_socket, ClientSession &session, DataCha
 
             send_reply(client_socket, FTPStatus::OK_150);
             updateTransferState(session, true);
-            bool ok = dataChannel.receiveFile();
+            std::string stagingDir = "server_files/session_" + std::to_string(session.sessionId);
+            bool ok = dataChannel.receiveFile(stagingDir);
             updateTransferState(session, false);
             if (!ok)
             {
@@ -1065,7 +1115,7 @@ void handle_client_command(SOCKET client_socket, ClientSession &session, DataCha
             }
 
             const TransferSession &recvInfo = dataChannel.getReceiveTransferSession();
-            fs::path receivedPath = fs::path("server_files") / recvInfo.fileName;
+            fs::path receivedPath = fs::path(stagingDir) / recvInfo.fileName;
             auto dest = resolveVirtualPath(session, parsed.arg);
             if (!dest || !fs::exists(receivedPath))
             {
@@ -1093,7 +1143,11 @@ void handle_client_command(SOCKET client_socket, ClientSession &session, DataCha
                     send_reply(client_socket, FTPStatus::ERR_550);
                     break;
                 }
+                
             }
+
+            std::error_code cleanupEc;
+            fs::remove(stagingDir, cleanupEc);
 
             send_reply(client_socket, FTPStatus::OK_226);
             break;
@@ -1266,9 +1320,9 @@ void handle_client_command(SOCKET client_socket, ClientSession &session, DataCha
 // Nhận client_socket theo GIÁ TRỊ (không phải &) vì mỗi thread cần
 // bản sao độc lập của biến này, sống suốt đời thread đó.
 // ---------------------------------------------------------------------
-void handle_client_session(SOCKET client_socket, const std::string& clientIp)
+void handle_client_session(SOCKET client_socket, const std::string& clientIp, int sessionId)
 {
-    log_info("New client connected from " + clientIp + "!");
+    log_info("New client connected from " + clientIp + " [Session ID: " + std::to_string(sessionId) + "]!");
 
     // ClientSession khai báo LOCAL trong hàm chạy trên thread riêng
     // -> mỗi thread có 1 session hoàn toàn độc lập, không đụng chạm
@@ -1276,7 +1330,7 @@ void handle_client_session(SOCKET client_socket, const std::string& clientIp)
     ClientSession session;
     DataChannel dataChannel; // Kênh dữ liệu UDP RIÊNG của client này, mở khi PASV/PORT
     session.controlSocketFd = static_cast<int>(client_socket);
-    session.sessionId = static_cast<int>(client_socket);
+    session.sessionId = sessionId;
     session.clientIp = clientIp;
 
     g_sessionRegistry.addSession(session.sessionId, clientIp);
@@ -1318,6 +1372,16 @@ void handle_client_session(SOCKET client_socket, const std::string& clientIp)
                 }
             }
         }
+    }
+
+    dataChannel.close();
+
+    // Dọn dẹp thư mục tạm staging nếu còn dư sau khi session kết thúc
+    std::string stagingDir = "server_files/session_" + std::to_string(session.sessionId);
+    std::error_code ec;
+    if (fs::exists(stagingDir, ec)) {
+        fs::remove_all(stagingDir, ec);
+        log_info("Cleaned up staging directory: " + stagingDir);
     }
 
     g_sessionRegistry.removeSession(session.sessionId);
@@ -1376,7 +1440,7 @@ int main()
     }
 
     // BƯỚC 4: Lắng nghe kết nối (Listen)
-    if (listen(server_fd, 3) == SOCKET_ERROR)
+    if (listen(server_fd, SOMAXCONN) == SOCKET_ERROR)
     {
         log_error("Listen failed.");
         closesocket(server_fd);
@@ -1387,6 +1451,7 @@ int main()
     log_info("Server is listening on port " + std::to_string(SERVER_PORT) + ". Waiting for connections...");
 
     // BƯỚC 5: Vòng lặp liên tục chấp nhận Client
+    static std::atomic<int> g_nextSessionId{1};
     while (true)
     {
         sockaddr_in client_addr{};
@@ -1404,10 +1469,13 @@ int main()
         inet_ntop(AF_INET, &client_addr.sin_addr, clientIpBuffer, sizeof(clientIpBuffer));
         const std::string clientIp = clientIpBuffer;
 
-        log_info("Accepted TCP client: " + clientIp);
+        int currentSessionId = g_nextSessionId++;
+
+        log_info("Accepted TCP client: " + clientIp + " [Session ID: " + std::to_string(currentSessionId) + "]");
+
 
         // One thread handles one independent FTP control session.
-        std::thread(handle_client_session, client_socket, clientIp).detach();
+        std::thread(handle_client_session, client_socket, clientIp, currentSessionId).detach();
     } // Kết thúc vòng lặp accept (Server tiếp tục chờ Client tiếp theo)
 
     // Đóng Server socket khi dừng Server

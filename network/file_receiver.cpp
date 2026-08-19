@@ -10,7 +10,7 @@ void FileReceiver::resetSession()
     session = TransferSession();
 }
 
-bool FileReceiver::receiveFile()
+bool FileReceiver::receiveFile(const std::string& outputDir)
 {
     resetSession();
     FileMetadata metadata{};
@@ -93,10 +93,10 @@ bool FileReceiver::receiveFile()
             log_info(
                 "File size : " + std::to_string(session.fileSize));
 
-            std::filesystem::create_directories("server_files");
+            std::filesystem::create_directories(outputDir);
 
             std::string outputPath =
-                "server_files/" +
+                outputDir + "/" +
                 std::string(metadata.fileName);
 
             file.open(outputPath,
