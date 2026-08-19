@@ -94,21 +94,140 @@ bool FileReceiver::receiveFile(const std::string& outputDir)
         session.remotePort = port;
 
         // ── META packet ──────────────────────────────────────────────────
+        // if (isMeta)
+        // {
+        //     if (metadataReceived)
+        //     {
+        //         log_info("Duplicate META packet (retransmit), re-ACKed.");
+        //         // META đã được ACK bởi RDTReceiver::receive() → chỉ skip
+        //         continue;
+        //     }
+
+        //     session.fileName = metadata.fileName;
+        //     session.fileSize = metadata.fileSize;
+
+        //     log_info("Connected sender : " + ip + ":" + std::to_string(port));
+        //     log_info("File name        : " + session.fileName);
+        //     log_info("File size        : " + std::to_string(session.fileSize));
+
+        //     std::filesystem::create_directories(outputDir);
+        //     std::string outputPath = outputDir + "/" + std::string(metadata.fileName);
+
+        //     file.open(outputPath, std::ios::binary);
+        //     if (!file.is_open())
+        //     {
+        //         log_error("Cannot create output file: " + outputPath);
+        //         return false;
+        //     }
+
+        //     metadataReceived    = true;
+        //     session.expectedSeq = packet.header.seq_num + 1;
+
+        //     log_info("--------------------------------");
+        //     log_info("Receive Start");
+        //     log_info("File : " + session.fileName);
+        //     log_info("Size : " + std::to_string(session.fileSize));
+        //     log_info("--------------------------------");
+        //     continue;
+        // }
+
+        // ── FIN packet ───────────────────────────────────────────────────
+        // if (PacketParser::isFin(packet))
+        // {
+        //     if (packet.header.seq_num != session.expectedSeq)
+        //     {
+        //         // GBN: FIN out-of-order → discard + cumulative ACK
+        //         //tatlog
+        //         // log_info("[GBN] FIN out-of-order seq=" +
+        //         //          std::to_string(packet.header.seq_num) +
+        //         //          " expected=" + std::to_string(session.expectedSeq));
+        //         if (session.expectedSeq > 0)
+        //             rdtReceiver.sendAck(session.expectedSeq - 1, ip, port);
+        //         continue;
+        //     }
+        //     rdtReceiver.sendAck(packet.header.seq_num, ip, port);
+        //     session.finished = true;
+        //     log_info("FIN received. Transfer finished.");
+        //     break;
+        // }
+
+        // if (!metadataReceived)
+        // {
+        //     log_error("Metadata missing.");
+        //     if (file.is_open()) file.close();
+        //     return false;
+        // }
+
+        // ── Duplicate packet (seq < expected) ────────────────────────────
+        // Xảy ra khi GBN sender retransmit từ đầu cửa sổ: receiver đã ghi
+        // gói này rồi, chỉ cần gửi lại ACK để unblock sender.
+        // if (packet.header.seq_num < session.expectedSeq)
+        // {
+        //     log_info("[GBN] Duplicate seq=" + std::to_string(packet.header.seq_num) +
+        //              " (expected=" + std::to_string(session.expectedSeq) +
+        //              "). Resending ACK.");
+        //     rdtReceiver.sendAck(packet.header.seq_num, ip, port);
+        //     continue;
+        // }
+
+        // ── Out-of-order packet (seq > expected) — GBN: discard ──────────
+        // GBN receiver KHÔNG buffer out-of-order. Gửi lại cumulative ACK
+        // của packet cuối đã nhận đúng thứ tự để trigger GBN retransmit.
+        // if (packet.header.seq_num > session.expectedSeq)
+        // {
+        //     // log_info("[GBN] Out-of-order seq=" + std::to_string(packet.header.seq_num) +
+        //     //          " expected=" + std::to_string(session.expectedSeq) +
+        //     //          ". Discarding, resending cumulative ACK.");
+        //     if (session.expectedSeq > 0)
+        //         rdtReceiver.sendAck(session.expectedSeq - 1, ip, port);
+        //     // expectedSeq = 0 → chưa nhận gói nào sau META → không gửi ACK
+        //     // (sender sẽ timeout và retransmit từ seq 1)
+        //     continue;
+        // }
+
+        // ── Đúng thứ tự: DATA packet ─────────────────────────────────────
+        // if (!PacketParser::isData(packet))
+        // {
+        //     log_error("Unexpected packet type at seq=" +
+        //               std::to_string(packet.header.seq_num));
+        //     continue;
+        // }
+
+        // file.write(packet.payload,
+        //            static_cast<std::streamsize>(packet.header.payload_len));
+
+        // if (file.fail())
+        // {
+        //     log_error("Write file failed.");
+        //     file.close();
+        //     return false;
+        // }
+
+        // session.expectedSeq++;
+        // session.bytesTransferred  += packet.header.payload_len;
+        // session.packetsTransferred++;
+
+        //tatlog
+        // log_info("Packet seq=" + std::to_string(packet.header.seq_num) +
+        //          " received (" + std::to_string(packet.header.payload_len) +
+        //          " bytes). Total=" + std::to_string(session.bytesTransferred));
+
+
+
+
+
+        // ── 1. META packet ──────────────────────────────────────────────────
         if (isMeta)
         {
             if (metadataReceived)
             {
                 log_info("Duplicate META packet (retransmit), re-ACKed.");
-                // META đã được ACK bởi RDTReceiver::receive() → chỉ skip
+                rdtReceiver.sendAck(packet.header.seq_num, ip, port); // FIX: Gửi lại ACK nếu bị gửi trùng META
                 continue;
             }
 
             session.fileName = metadata.fileName;
             session.fileSize = metadata.fileSize;
-
-            log_info("Connected sender : " + ip + ":" + std::to_string(port));
-            log_info("File name        : " + session.fileName);
-            log_info("File size        : " + std::to_string(session.fileSize));
 
             std::filesystem::create_directories(outputDir);
             std::string outputPath = outputDir + "/" + std::string(metadata.fileName);
@@ -123,28 +242,21 @@ bool FileReceiver::receiveFile(const std::string& outputDir)
             metadataReceived    = true;
             session.expectedSeq = packet.header.seq_num + 1;
 
-            log_info("--------------------------------");
-            log_info("Receive Start");
-            log_info("File : " + session.fileName);
-            log_info("Size : " + std::to_string(session.fileSize));
-            log_info("--------------------------------");
+            rdtReceiver.sendAck(packet.header.seq_num, ip, port);
             continue;
         }
 
-        // ── FIN packet ───────────────────────────────────────────────────
+        // ── 2. FIN packet ───────────────────────────────────────────────────
         if (PacketParser::isFin(packet))
         {
             if (packet.header.seq_num != session.expectedSeq)
             {
-                // GBN: FIN out-of-order → discard + cumulative ACK
-                //tatlog
-                // log_info("[GBN] FIN out-of-order seq=" +
-                //          std::to_string(packet.header.seq_num) +
-                //          " expected=" + std::to_string(session.expectedSeq));
                 if (session.expectedSeq > 0)
                     rdtReceiver.sendAck(session.expectedSeq - 1, ip, port);
                 continue;
             }
+
+            rdtReceiver.sendAck(packet.header.seq_num, ip, port);
             session.finished = true;
             log_info("FIN received. Transfer finished.");
             break;
@@ -157,43 +269,24 @@ bool FileReceiver::receiveFile(const std::string& outputDir)
             return false;
         }
 
-        // ── Duplicate packet (seq < expected) ────────────────────────────
-        // Xảy ra khi GBN sender retransmit từ đầu cửa sổ: receiver đã ghi
-        // gói này rồi, chỉ cần gửi lại ACK để unblock sender.
         if (packet.header.seq_num < session.expectedSeq)
         {
-            log_info("[GBN] Duplicate seq=" + std::to_string(packet.header.seq_num) +
-                     " (expected=" + std::to_string(session.expectedSeq) +
-                     "). Resending ACK.");
             rdtReceiver.sendAck(packet.header.seq_num, ip, port);
             continue;
         }
-
-        // ── Out-of-order packet (seq > expected) — GBN: discard ──────────
-        // GBN receiver KHÔNG buffer out-of-order. Gửi lại cumulative ACK
-        // của packet cuối đã nhận đúng thứ tự để trigger GBN retransmit.
         if (packet.header.seq_num > session.expectedSeq)
         {
-            // log_info("[GBN] Out-of-order seq=" + std::to_string(packet.header.seq_num) +
-            //          " expected=" + std::to_string(session.expectedSeq) +
-            //          ". Discarding, resending cumulative ACK.");
             if (session.expectedSeq > 0)
                 rdtReceiver.sendAck(session.expectedSeq - 1, ip, port);
-            // expectedSeq = 0 → chưa nhận gói nào sau META → không gửi ACK
-            // (sender sẽ timeout và retransmit từ seq 1)
             continue;
         }
-
-        // ── Đúng thứ tự: DATA packet ─────────────────────────────────────
         if (!PacketParser::isData(packet))
         {
-            log_error("Unexpected packet type at seq=" +
-                      std::to_string(packet.header.seq_num));
+            log_error("Unexpected packet type at seq=" + std::to_string(packet.header.seq_num));
             continue;
         }
 
-        file.write(packet.payload,
-                   static_cast<std::streamsize>(packet.header.payload_len));
+        file.write(packet.payload, static_cast<std::streamsize>(packet.header.payload_len));
 
         if (file.fail())
         {
@@ -202,14 +295,12 @@ bool FileReceiver::receiveFile(const std::string& outputDir)
             return false;
         }
 
-        session.expectedSeq++;
-        session.bytesTransferred  += packet.header.payload_len;
-        session.packetsTransferred++;
 
-        //tatlog
-        // log_info("Packet seq=" + std::to_string(packet.header.seq_num) +
-        //          " received (" + std::to_string(packet.header.payload_len) +
-        //          " bytes). Total=" + std::to_string(session.bytesTransferred));
+        rdtReceiver.sendAck(packet.header.seq_num, ip, port);
+
+        session.expectedSeq++;
+        session.bytesTransferred   += packet.header.payload_len;
+        session.packetsTransferred++;
     }
 
     if (file.is_open())

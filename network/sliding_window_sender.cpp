@@ -75,7 +75,7 @@ int SlidingWindowSender::drainAcks()
         unsigned short port;
 
         if (!udp.receivePacket(ack, ip, port))
-            break;  // timeout POLL_TIMEOUT_MS → không còn ACK
+            break;  // timeout POLL_TIMEOUT_MS → không còn ACK trong buffer
 
         if (!verifyChecksum(ack))                        continue;
         if (!(ack.header.flags & RDTFlag::ACK))          continue;
@@ -84,11 +84,11 @@ int SlidingWindowSender::drainAcks()
 
         uint32_t ackedSeq = ack.header.ack_num;
 
-        // Stale ACK (nằm ngoài cửa sổ) → bỏ qua, KHÔNG log để tránh spam
+        // Bỏ qua ACK nằm ngoài cửa sổ (ACK cũ hoặc ACK chưa gửi)
         if (ackedSeq < base || ackedSeq >= nextToSend)
             continue;
 
-        // ACK cumulative: advance base đến ackedSeq + 1
+        // Cumulative ACK: Dịch chuyển base lên ackedSeq + 1
         while (base <= ackedSeq && base < nextToSend)
         {
             acked[slot(base)] = false;
@@ -96,7 +96,7 @@ int SlidingWindowSender::drainAcks()
         }
         count++;
 
-        if (base == nextToSend) break;  // cửa sổ trống
+        if (base == nextToSend) break;  // Cửa sổ đã trống
     }
 
     return count;
