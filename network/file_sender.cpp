@@ -72,12 +72,12 @@ bool FileSender::sendFile(const std::string &filePath,
 {
     resetSession();
 
-    session.remoteIp = receiverIp;
+    session.remoteIp   = receiverIp;
     session.remotePort = receiverPort;
-    session.fileName = filePath;
+    session.fileName   = filePath;
 
     aborted.store(false);
-    // Mở file
+
     std::ifstream file(filePath, std::ios::binary);
     if (!file.is_open())
     {
@@ -91,7 +91,6 @@ bool FileSender::sendFile(const std::string &filePath,
 
     session.fileSize = fileSize;
 
-    // Xây metadata
     FileMetadata meta{};
     std::string filename = std::filesystem::path(filePath).filename().string();
     std::strncpy(meta.fileName, filename.c_str(), MAX_FILENAME_LENGTH - 1);
@@ -115,57 +114,36 @@ bool FileSender::sendFile(const std::string &filePath,
         return std::chrono::duration<double>(Clock::now() - startTime).count();
     };
 
-    // Gửi META
+    // ── 1. GỬI META PACKET (ĐÃ SỬA BUG GỬI 2 LẦN) ───────────────────
     auto metaPacket = PacketBuilder::buildMetaPacket(session.nextSeq, meta);
+    bool metaSuccess = false;
 
     if (swSender != nullptr)
     {
         swSender->beginSession(receiverIp, receiverPort);
-    }
-    // 1. Thực hiện gửi gói tin
-    bool sendSuccess = false;
-    if (swSender != nullptr)
-    {
-        sendSuccess = swSender->send(metaPacket);
+        metaSuccess = swSender->send(metaPacket) && swSender->flush();
     }
     else
     {
-        sendSuccess = rdtSender.send(metaPacket, receiverIp, receiverPort);
+        metaSuccess = rdtSender.send(metaPacket, receiverIp, receiverPort);
     }
 
-    // 2. Kiểm tra kết quả gửi
-    if (!sendSuccess)
+    if (!metaSuccess)
     {
-        std::cout << std::endl; // Xuống dòng để không bị đè thanh Progress Bar
-
-        // Nếu gửi thất bại, kiểm tra ngay xem có phải do lệnh ABOR vừa đóng socket không
         if (aborted.load())
-        {
-            log_info("FileSender loop gracefully aborted by user (socket closed).");
-        }
+            log_info("FileSender: transfer aborted during META send.");
         else
-        {
-            log_error("Send failed at seq=" + std::to_string(session.nextSeq) + ". Receiver unresponsive or socket error.");
-        }
+            log_error("Failed to send metadata at seq=" + std::to_string(session.nextSeq));
 
         file.close();
         return false;
-    }
-    else
-    {
-        if (!rdtSender.send(metaPacket, receiverIp, receiverPort))
-        {
-            log_error("Failed to send metadata (S&W).");
-            file.close();
-            return false;
-        }
     }
 
     log_info("Metadata sent. Name=" + std::string(meta.fileName) +
              " Size=" + std::to_string(meta.fileSize));
     session.nextSeq++;
 
-    // Gửi DATA packets
+    // ── 2. GỬI DATA PACKETS ─────────────────────────────────────────
     char buffer[MAX_PAYLOAD_SIZE];
 
     while (true)
@@ -173,10 +151,10 @@ bool FileSender::sendFile(const std::string &filePath,
         if (aborted.load())
         {
             log_info("FileSender: aborted by ABOR command.");
-            if (file.is_open())
-                file.close();
+            if (file.is_open()) file.close();
             return false;
         }
+
         file.read(buffer, MAX_PAYLOAD_SIZE);
 
         if (file.bad())
@@ -187,51 +165,38 @@ bool FileSender::sendFile(const std::string &filePath,
         }
 
         std::streamsize bytesRead = file.gcount();
-        if (bytesRead <= 0)
-            break;
+        if (bytesRead <= 0) break;
 
         auto packet = PacketBuilder::buildDataPacket(
             session.nextSeq,
             buffer,
             static_cast<uint16_t>(bytesRead));
 
+        bool dataSuccess = false;
         if (swSender != nullptr)
         {
-            if (!swSender->send(packet))
-            {
-                if (aborted.load())
-                {
-                    log_info("FileSender: transfer aborted during UDP send.");
-
-                    if (file.is_open())
-                        file.close();
-
-                    return false;
-                }
-
-                log_error("FileSender: UDP send failed.");
-
-                if (file.is_open())
-                    file.close();
-
-                return false;
-            }
+            dataSuccess = swSender->send(packet);
         }
         else
         {
-            if (!rdtSender.send(packet, receiverIp, receiverPort))
-            {
-                log_error("S&W send failed at seq=" + std::to_string(session.nextSeq));
-                file.close();
-                return false;
-            }
+            dataSuccess = rdtSender.send(packet, receiverIp, receiverPort);
+        }
+
+        if (!dataSuccess)
+        {
+            if (aborted.load())
+                log_info("FileSender: transfer aborted during UDP send.");
+            else
+                log_error("FileSender: UDP send failed at seq=" + std::to_string(session.nextSeq));
+
+            if (file.is_open()) file.close();
+            return false;
         }
 
         session.nextSeq++;
         session.bytesTransferred += static_cast<uint64_t>(bytesRead);
         session.packetsTransferred++;
 
-        // Cập nhật progress mỗi 16 packet (~22 KB)
         if (session.packetsTransferred % 16 == 0 || file.eof())
             printProgress(session.bytesTransferred, fileSize, elapsedSec());
     }
@@ -239,43 +204,27 @@ bool FileSender::sendFile(const std::string &filePath,
     file.close();
     std::cout << std::endl;
 
-    // Gửi FIN
+    // ── 3. GỬI FIN PACKET ───────────────────────────────────────────
     auto finPacket = PacketBuilder::buildFinPacket(session.nextSeq);
+    bool finSuccess = false;
 
     if (swSender != nullptr)
     {
-        if (!swSender->send(finPacket))
-        {
-            log_error("Failed to send FIN (GBN).");
-            return false;
-        }
-        if (!swSender->flush())
-        {
-            if (aborted.load())
-            {
-                log_info("FileSender: transfer aborted during UDP flush.");
-
-                if (file.is_open())
-                    file.close();
-
-                return false;
-            }
-
-            log_error("FileSender: UDP flush failed.");
-
-            if (file.is_open())
-                file.close();
-
-            return false;
-        }
+        finSuccess = swSender->send(finPacket) && swSender->flush();
     }
     else
     {
-        if (!rdtSender.send(finPacket, receiverIp, receiverPort))
-        {
-            log_error("Failed to send FIN (S&W).");
-            return false;
-        }
+        finSuccess = rdtSender.send(finPacket, receiverIp, receiverPort);
+    }
+
+    if (!finSuccess)
+    {
+        if (aborted.load())
+            log_info("FileSender: transfer aborted during FIN send.");
+        else
+            log_error("Failed to send/flush FIN.");
+
+        return false;
     }
 
     log_info("FIN sent and ACKed.");

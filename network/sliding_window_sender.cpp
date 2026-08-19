@@ -3,10 +3,9 @@
 #include "packet_builder.h"
 #include "../common/logger.h"
 #include <chrono>
-#include <thread>
 
 using Clock = std::chrono::steady_clock;
-using Ms = std::chrono::milliseconds;
+using Ms    = std::chrono::milliseconds;
 
 SlidingWindowSender::SlidingWindowSender(UDPSocket &socket)
     : udp(socket),
@@ -16,36 +15,58 @@ SlidingWindowSender::SlidingWindowSender(UDPSocket &socket)
 {
 }
 
-void SlidingWindowSender::beginSession(const std::string &ip, unsigned short port)
-{
-    remoteIp = ip;
-    remotePort = port;
-    base = 0;
-    nextToSend = 0;
-    windowRetries = 0;
-    aborted.store(false);
-    std::fill(acked.begin(), acked.end(), false);
-}
 void SlidingWindowSender::abortTransfer()
 {
     aborted.store(true);
 }
-// ------------------------------------------------------------
-//  drainAcks() — đọc tất cả ACK đang có trong buffer socket.
+
+void SlidingWindowSender::beginSession(const std::string &ip, unsigned short port)
+{
+    remoteIp      = ip;
+    remotePort    = port;
+    base          = 0;
+    nextToSend    = 0;
+    windowRetries = 0;
+    aborted.store(false);
+    std::fill(acked.begin(), acked.end(), false);
+
+    // ── FIX BUG 2: xả sạch buffer socket trước khi bắt đầu phiên mới ──
+    // Sau khi ABOR hoặc phiên cũ kết thúc, có thể còn ACK cũ
+    // (seq từ phiên trước) nằm trong buffer OS. Nếu không xả,
+    // drainAcks() của phiên mới sẽ đọc nhầm → stale ACK spam log
+    // và làm flush() chậm (phải đợi timeout sau mỗi lần đọc stale).
+    //
+    // Cách xả: set timeout = 1ms, đọc cho đến khi timeout.
+    udp.setReceiveTimeout(1);
+    {
+        RDTPacket dummy;
+        std::string dip;
+        unsigned short dport;
+        int drained = 0;
+        while (udp.receivePacket(dummy, dip, dport))
+            drained++;
+        if (drained > 0)
+            log_info("[GBN] beginSession: drained " +
+                     std::to_string(drained) +
+                     " stale packet(s) from previous session.");
+    }
+    // Restore về POLL_TIMEOUT_MS cho phiên mới
+    udp.setReceiveTimeout(POLL_TIMEOUT_MS);
+}
+
+// ─────────────────────────────────────────────────────────────────────
+//  drainAcks() — đọc tất cả ACK trong buffer socket.
 //
-//  Chiến lược: gọi receivePacket() với timeout ngắn (POLL_TIMEOUT_MS)
-//  lặp lại cho đến khi timeout (không còn ACK nào), hoặc
-//  nhận được ACK đẩy base về đúng nextToSend (cửa sổ trống).
+//  FIX BUG 1: timeout socket được set 1 lần trong beginSession(),
+//  KHÔNG set lại ở đây. Trước đây drainAcks() set 5000ms rồi restore
+//  → mỗi lần không có ACK phải block 5000ms → file lớn = hàng phút.
 //
-//  Trả về số ACK hợp lệ đã xử lý.
-// ------------------------------------------------------------
+//  ACK cumulative: ACK(n) xác nhận tất cả seq ≤ n → advance base
+//  thẳng đến n+1, không cần đánh dấu từng slot.
+// ─────────────────────────────────────────────────────────────────────
 int SlidingWindowSender::drainAcks()
 {
     int count = 0;
-
-    // Đặt timeout socket xuống POLL_TIMEOUT_MS để poll nhanh.
-    // Sau khi drain xong sẽ restore lại 5000ms.
-    udp.setReceiveTimeout(POLL_TIMEOUT_MS);
 
     while (true)
     {
@@ -54,244 +75,119 @@ int SlidingWindowSender::drainAcks()
         unsigned short port;
 
         if (!udp.receivePacket(ack, ip, port))
-            break; // timeout → không còn ACK nào trong buffer
+            break;  // timeout POLL_TIMEOUT_MS → không còn ACK
 
-        // Bỏ qua gói corrupt hoặc không phải ACK
-        if (!verifyChecksum(ack))
-        {
-            log_error("[GBN] Corrupt ACK discarded.");
-            continue;
-        }
-        if (!(ack.header.flags & RDTFlag::ACK))
-        {
-            log_error("[GBN] Non-ACK packet received while draining, discarded.");
-            continue;
-        }
-        if (ack.header.version != RDT_VERSION || ack.header.magic != RDT_MAGIC)
-        {
-            log_error("[GBN] ACK version/magic mismatch, discarded.");
-            continue;
-        }
+        if (!verifyChecksum(ack))                        continue;
+        if (!(ack.header.flags & RDTFlag::ACK))          continue;
+        if (ack.header.version != RDT_VERSION)           continue;
+        if (ack.header.magic   != RDT_MAGIC)             continue;
 
         uint32_t ackedSeq = ack.header.ack_num;
 
-        // Bỏ qua ACK nằm ngoài cửa sổ hiện tại (stale từ phiên cũ
-        // hoặc đã được xử lý trước đó).
+        // Stale ACK (nằm ngoài cửa sổ) → bỏ qua, KHÔNG log để tránh spam
         if (ackedSeq < base || ackedSeq >= nextToSend)
-        {
-            // tatlog
-            log_info("[GBN] Stale/out-of-window ACK seq=" +
-                     std::to_string(ackedSeq) + " (base=" +
-                     std::to_string(base) + " next=" +
-                     std::to_string(nextToSend) + "), ignored.");
             continue;
-        }
 
-        // Đánh dấu slot này đã được ACK
-        if (ackedSeq >= base && ackedSeq < nextToSend)
+        // ACK cumulative: advance base đến ackedSeq + 1
+        while (base <= ackedSeq && base < nextToSend)
         {
-            //tatlog
-            // log_info("[GBN] ACK received seq=" +
-            //          std::to_string(ackedSeq) +
-            //          " (base=" + std::to_string(base) + ")");
-
-            // ACK cumulative:
-            // ACK(n) xác nhận tất cả packet từ base đến n.
-            while (base <= ackedSeq && base < nextToSend)
-            {
-                acked[slot(base)] = false;
-                base++;
-            }
-
-            count++;
+            acked[slot(base)] = false;
+            base++;
         }
+        count++;
 
-        // Nếu cửa sổ đã trống thì không cần đọc tiếp
-        if (base == nextToSend)
-            break;
+        if (base == nextToSend) break;  // cửa sổ trống
     }
-
-    // Restore timeout socket về 5000ms (giá trị dài để gọi ngoài vẫn OK)
-    udp.setReceiveTimeout(5000);
 
     return count;
 }
 
-// ------------------------------------------------------------
-//  retransmitWindow() — GBN: gửi lại TẤT CẢ gói từ base đến
-//  nextToSend-1 theo đúng thứ tự. Reset sentTime để timeout
-//  được tính lại từ đầu sau khi retransmit.
-// ------------------------------------------------------------
 bool SlidingWindowSender::retransmitWindow()
 {
-    if (base == nextToSend)
-        return true; // cửa sổ trống, không cần retransmit
+    if (base == nextToSend) return true;
 
     windowRetries++;
     if (windowRetries > MAX_WINDOW_RETRIES)
     {
         log_error("[GBN] Max retries (" + std::to_string(MAX_WINDOW_RETRIES) +
-                  ") exceeded. Giving up at base=" + std::to_string(base));
+                  ") exceeded at base=" + std::to_string(base));
         return false;
     }
 
-    log_info("[GBN] Window timeout (retry " + std::to_string(windowRetries) +
-             "/" + std::to_string(MAX_WINDOW_RETRIES) +
-             "). Retransmitting seq=" + std::to_string(base) +
-             " to " + std::to_string(nextToSend - 1));
+    log_info("[GBN] Timeout — retransmit seq=" + std::to_string(base) +
+             ".." + std::to_string(nextToSend - 1) +
+             " (retry " + std::to_string(windowRetries) +
+             "/" + std::to_string(MAX_WINDOW_RETRIES) + ")");
 
     auto now = Clock::now();
     for (uint32_t seq = base; seq < nextToSend; seq++)
     {
         if (!udp.sendPacket(window[slot(seq)], remoteIp, remotePort))
         {
-            log_error("[GBN] UDP send failed during retransmit (seq=" +
-                      std::to_string(seq) + ").");
+            log_error("[GBN] UDP send failed retransmit seq=" +
+                      std::to_string(seq));
             return false;
         }
         sentTime[slot(seq)] = now;
-        log_info("[GBN] Retransmit seq=" + std::to_string(seq));
     }
-
     return true;
 }
 
-// ------------------------------------------------------------
-//  send() — công khai, gọi từ FileSender cho mỗi packet.
-//
-//  Nếu cửa sổ đầy: poll ACK cho đến khi có chỗ trống hoặc
-//  timeout → retransmit → thử lại.
-// ------------------------------------------------------------
 bool SlidingWindowSender::send(const RDTPacket &packet)
 {
-    // FIX: kiểm tra abort NGAY TỪ ĐẦU, không chỉ trong lúc chờ cửa sổ đầy.
-    // Nếu thiếu check này, khi cửa sổ chưa đầy (file nhỏ / mạng nhanh),
-    // hàm sẽ bỏ qua hoàn toàn việc kiểm tra abort và tiếp tục gửi hết các
-    // gói còn lại ra socket dù ABOR đã được gọi -- các gói "rác" đó nằm
-    // lại trong buffer và bị phiên truyền file KẾ TIẾP đọc nhầm, gây ra
-    // hàng loạt log "[GBN] Out-of-order" và khiến ABOR có cảm giác như
-    // không còn tác dụng ở lần truyền sau.
-    if (aborted.load())
-    {
-        log_info("[GBN] Sender aborted, refusing to send further packets.");
-        return false;
-    }
+    if (aborted.load()) return false;
 
-    // Đợi cho đến khi cửa sổ có chỗ trống
     while (windowFull())
     {
-        if (aborted.load())
-        {
-            log_info("[GBN] Sender aborted during windowFull wait.");
-            return false;
-        }
+        if (aborted.load()) return false;
+
         int got = drainAcks();
-        if (got > 0)
-        {
-            windowRetries = 0; // nhận được ACK → reset bộ đếm retry
-            continue;
-        }
+        if (got > 0) { windowRetries = 0; continue; }
 
-        // Không nhận được ACK nào → kiểm tra timeout của từng slot
-        // (trong GBN: nếu bất kỳ slot nào timeout → retransmit toàn bộ)
-        bool anyTimeout = false;
-        auto now = Clock::now();
-        for (uint32_t seq = base; seq < nextToSend; seq++)
+        // Kiểm tra timeout thực sự của base packet
+        auto elapsed = std::chrono::duration_cast<Ms>(
+            Clock::now() - sentTime[slot(base)]).count();
+        if (elapsed >= POLL_TIMEOUT_MS * 5)
         {
-            auto elapsed = std::chrono::duration_cast<Ms>(
-                               now - sentTime[slot(seq)])
-                               .count();
-            if (elapsed >= POLL_TIMEOUT_MS * 5) // 1000ms hard timeout per packet
-            {
-                anyTimeout = true;
-                break;
-            }
-        }
-
-        if (anyTimeout)
-        {
-            if (!retransmitWindow())
-                return false;
+            if (!retransmitWindow()) return false;
         }
     }
 
-    // Có chỗ trống trong cửa sổ → gửi packet mới
-    int s = slot(nextToSend);
-    window[s] = packet; // lưu bản sao để retransmit nếu cần
-    acked[s] = false;
+    int s         = slot(nextToSend);
+    window[s]     = packet;
+    acked[s]      = false;
+    sentTime[s]   = Clock::now();
+    windowRetries = 0;
 
     if (!udp.sendPacket(packet, remoteIp, remotePort))
     {
-        log_error("[GBN] UDP send failed for seq=" +
+        log_error("[GBN] UDP send failed seq=" +
                   std::to_string(packet.header.seq_num));
         return false;
     }
 
-    sentTime[s] = Clock::now();
-    windowRetries = 0;
-    // tatlog
-    // log_info("[GBN] Sent seq=" + std::to_string(packet.header.seq_num) +
-    //          " (window: base=" + std::to_string(base) +
-    //          " inFlight=" + std::to_string(nextToSend - base + 1) + ")");
-
     nextToSend++;
-
-    // Ngay sau khi gửi, thử drain ACK đang chờ để mở rộng cửa sổ sớm
-    // drainAcks();
-
     return true;
 }
 
-// ------------------------------------------------------------
-//  flush() — đợi ACK cho tất cả gói còn lại trong cửa sổ.
-//  Gọi sau khi send() tất cả packet kể cả FIN.
-// ------------------------------------------------------------
 bool SlidingWindowSender::flush()
 {
-    log_info("[GBN] Flushing window (base=" + std::to_string(base) +
-             " nextToSend=" + std::to_string(nextToSend) + ")");
+    log_info("[GBN] Flushing " +
+             std::to_string(nextToSend - base) +
+             " packets in window...");
 
     while (base < nextToSend)
     {
-        if (aborted.load())
-        {
-            log_info("[GBN] Sender aborted during flush.");
-            return false;
-        }
+        if (aborted.load()) return false;
+
         int got = drainAcks();
-        if (got > 0)
+        if (got > 0) { windowRetries = 0; continue; }
+
+        auto elapsed = std::chrono::duration_cast<Ms>(
+            Clock::now() - sentTime[slot(base)]).count();
+        if (elapsed >= POLL_TIMEOUT_MS * 5)
         {
-            windowRetries = 0;
-            continue;
-        }
-
-        // // Timeout → retransmit
-        // if (!retransmitWindow())
-        //     return false;
-
-        // // Sau retransmit, đọc ACK một lần nữa
-        // drainAcks();
-        // Bổ sung kiểm tra timeout THỰC SỰ
-        bool anyTimeout = false;
-        auto now = Clock::now();
-        for (uint32_t seq = base; seq < nextToSend; seq++)
-        {
-            auto elapsed = std::chrono::duration_cast<Ms>(
-                               now - sentTime[slot(seq)])
-                               .count();
-
-            // Chờ đủ 1000ms (POLL_TIMEOUT_MS * 5) mới tính là timeout
-            if (elapsed >= POLL_TIMEOUT_MS * 5)
-            {
-                anyTimeout = true;
-                break;
-            }
-        }
-
-        if (anyTimeout)
-        {
-            if (!retransmitWindow())
-                return false;
+            if (!retransmitWindow()) return false;
         }
     }
 

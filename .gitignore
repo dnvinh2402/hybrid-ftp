@@ -4,3 +4,4 @@ ftp_root/
 *.deb
 *.tmp_ascii
 client_files/*.deb
+build/

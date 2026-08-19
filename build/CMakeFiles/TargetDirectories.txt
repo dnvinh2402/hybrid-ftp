@@ -1,7 +1,0 @@
-G:/ftp/hybrid-ftp/build/CMakeFiles/ftp_server.dir
-G:/ftp/hybrid-ftp/build/CMakeFiles/ftp_client.dir
-G:/ftp/hybrid-ftp/build/CMakeFiles/protocol_tests.dir
-G:/ftp/hybrid-ftp/build/CMakeFiles/concurrency_tests.dir
-G:/ftp/hybrid-ftp/build/CMakeFiles/test.dir
-G:/ftp/hybrid-ftp/build/CMakeFiles/edit_cache.dir
-G:/ftp/hybrid-ftp/build/CMakeFiles/rebuild_cache.dir
