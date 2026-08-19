@@ -423,6 +423,23 @@ static bool convertCRLFToLFInFile(const fs::path &srcPath, const fs::path &dstPa
     return true;
 }
 
+std::string commandForLog(const ParsedCommand &parsed)
+{
+    if (parsed.cmd == FtpCommand::PASS)
+    {
+        return "PASS ********";
+    }
+
+    std::string command = parsed.verbRaw;
+
+    if (!parsed.arg.empty())
+    {
+        command += " " + parsed.arg;
+    }
+
+    return command;
+}
+
 // Hàm xử lý phân tích và phản hồi lệnh FTP
 void handle_client_command(
     SOCKET client_socket,
@@ -1584,6 +1601,11 @@ void handle_client_session(
 
             const ParsedCommand parsed = parseLine(commandLine);
 
+            log_info(
+                "Session " + std::to_string(session->sessionId)
+                + " | Client " + clientIp
+                + " | COMMAND | " + commandForLog(parsed));
+
             handle_client_command(
                 client_socket,
                 session,
@@ -1627,6 +1649,12 @@ void handle_client_session(
 
 int main()
 {
+    if (!Logger::initialize("logs/server.log", true))
+    {
+        std::cerr << "[LOGGER][ERROR] Cannot open logs/server.log" << std::endl;
+        return 1;
+    }
+
     if (!init_sockets())
     {
         log_error("Failed to initialize socket platform.");

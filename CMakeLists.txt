@@ -21,6 +21,7 @@ set(COMMON_HEADERS
 )
 
 set(COMMON_SOURCES
+    common/logger.cpp
     common/sha256.cpp
 )
 
@@ -110,6 +111,10 @@ set_target_properties(ftp_server ftp_client
 
 enable_testing()
 
+# -----------------------------------------------------------------------------
+# Unit tests
+# -----------------------------------------------------------------------------
+
 add_executable(protocol_tests
     tests/protocol_tests.cpp
     server/authentication_manager.cpp
@@ -121,74 +126,109 @@ add_test(NAME protocol_tests COMMAND protocol_tests)
 add_executable(concurrency_tests
     tests/concurrency_tests.cpp
     server/session_registry.cpp
+    common/logger.cpp
 )
 target_include_directories(concurrency_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME concurrency_tests COMMAND concurrency_tests)
 
-add_executable(
-    command_tests
+add_executable(command_tests
     tests/command_tests.cpp
 )
+target_include_directories(command_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+add_test(NAME command_tests COMMAND command_tests)
 
-target_include_directories(
-    command_tests
-    PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}
-)
-
-add_test(
-    NAME command_tests
-    COMMAND command_tests
-)
-
-add_executable(
-    socket_compat_tests
+add_executable(socket_compat_tests
     tests/socket_compat_tests.cpp
     network/udp_socket.cpp
+    common/logger.cpp
 )
-
-target_include_directories(
-    socket_compat_tests
-    PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}
-)
+target_include_directories(socket_compat_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
 if(WIN32)
-    target_link_libraries(
-        socket_compat_tests
-        PRIVATE
-        ws2_32
-    )
+    target_link_libraries(socket_compat_tests PRIVATE ws2_32)
 endif()
 
-add_test(
-    NAME socket_compat_tests
-    COMMAND socket_compat_tests
-)
-add_executable(
+add_test(NAME socket_compat_tests COMMAND socket_compat_tests)
+
+# -----------------------------------------------------------------------------
+# Data-plane integration tests
+#
+# Every target below links the real DataChannel/RDT implementation so the tests
+# exercise the same code that ftp_client and ftp_server use at runtime.
+# -----------------------------------------------------------------------------
+
+function(add_network_integration_test target source)
+    add_executable(${target}
+        ${source}
+        ${COMMON_SOURCES}
+        ${NETWORK_SOURCES}
+        ${NETWORK_HEADERS}
+        ${COMMON_HEADERS}
+    )
+
+    target_include_directories(${target} PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+
+    if(WIN32)
+        target_link_libraries(${target} PRIVATE ws2_32)
+    endif()
+
+    add_test(NAME ${target} COMMAND ${target})
+endfunction()
+
+add_network_integration_test(
     rdt_integration_tests
     tests/rdt_integration_tests.cpp
-    common/sha256.cpp
-    ${NETWORK_SOURCES}
-    ${NETWORK_HEADERS}
-    ${COMMON_HEADERS}
 )
 
-target_include_directories(
-    rdt_integration_tests
-    PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}
+add_network_integration_test(
+    transfer_integration_tests
+    tests/transfer_integration_tests.cpp
 )
 
-if(WIN32)
-    target_link_libraries(
-        rdt_integration_tests
-        PRIVATE
-        ws2_32
+add_network_integration_test(
+    ascii_transfer_tests
+    tests/ascii_transfer_tests.cpp
+)
+
+add_network_integration_test(
+    abort_transfer_tests
+    tests/abort_transfer_tests.cpp
+)
+
+add_network_integration_test(
+    session_isolation_tests
+    tests/session_isolation_tests.cpp
+)
+
+# -----------------------------------------------------------------------------
+# Real FTP control-channel integration test
+#
+# The Python test starts the compiled ftp_server, connects through TCP, verifies
+# authentication/state-changing commands and expected FTP reply codes, then
+# terminates the server. It is optional only when Python 3 is unavailable.
+# -----------------------------------------------------------------------------
+
+find_package(Python3 COMPONENTS Interpreter QUIET)
+
+if(Python3_Interpreter_FOUND)
+    add_test(
+        NAME ftp_command_integration
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/ftp_command_integration.py
+            --server
+            $<TARGET_FILE:ftp_server>
     )
-endif()
 
-add_test(
-    NAME rdt_integration_tests
-    COMMAND rdt_integration_tests
-)
+    set_tests_properties(
+        ftp_command_integration
+        PROPERTIES
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+            RUN_SERIAL TRUE
+            TIMEOUT 30
+    )
+else()
+    message(STATUS "Python 3 not found: ftp_command_integration will not be registered with CTest.")
+endif()

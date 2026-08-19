@@ -1,19 +1,27 @@
 #ifndef LOGGER_H
 #define LOGGER_H
 
-#include <iostream>
 #include <string>
 
-inline void log_info(const std::string& msg) {
-    std::cout << "\033[32m[INFO]\033[0m " << msg << std::endl;
+namespace Logger
+{
+// Opens the process log file. When truncateFile is true, the previous
+// contents are cleared; otherwise new messages are appended.
+bool initialize(const std::string &filePath, bool truncateFile = false);
+
+// Flushes and closes the current process log file.
+void shutdown();
+
+// Writes the same message to the terminal and, when initialized, to the
+// configured log file. Functions are thread-safe inside one process.
+void info(const std::string &message);
+void error(const std::string &message);
+void debug(const std::string &message);
 }
 
-inline void log_error(const std::string& msg) {
-    std::cerr << "\033[31m[ERROR]\033[0m " << msg << std::endl;
-}
-
-inline void log_debug(const std::string& msg) {
-    std::cout << "\033[34m[DEBUG]\033[0m " << msg << std::endl;
-}
+// Backward-compatible helpers used throughout the existing project.
+void log_info(const std::string &message);
+void log_error(const std::string &message);
+void log_debug(const std::string &message);
 
 #endif // LOGGER_H

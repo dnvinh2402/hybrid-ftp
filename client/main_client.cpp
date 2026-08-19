@@ -777,6 +777,12 @@ int main(int argc, char *argv[])
 {
     fs::create_directories("client_files");
 
+    if (!Logger::initialize("logs/client.log", false))
+    {
+        std::cerr << "[LOGGER][ERROR] Cannot open logs/client.log" << std::endl;
+        return 1;
+    }
+
     if (!init_sockets())
     {
         log_error("Failed to initialize socket platform.");
@@ -1109,6 +1115,7 @@ int main(int argc, char *argv[])
 
     SocketPlatform::close(sock);
     cleanup_sockets();
+    Logger::shutdown();
 
     return 0;
 }
