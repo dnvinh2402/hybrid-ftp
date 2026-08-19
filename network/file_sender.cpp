@@ -11,6 +11,8 @@
 using Clock = std::chrono::steady_clock;
 
 // ----------------------------------------------------------------
+#include "file_sender.h"
+#include <filesystem>
 FileSender::FileSender(RDTSender &sender)
     : rdtSender(sender)
 {

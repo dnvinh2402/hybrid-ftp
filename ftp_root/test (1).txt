@@ -1,0 +1,1 @@
+g++ -std=c++17 -I. -Icommon -Inetwork -Iclient client/main_client.cpp common/*.cpp network/*.cpp -o client/client.exe -lws2_32

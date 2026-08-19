@@ -2,7 +2,6 @@
 #include "udp_socket.h"
 #include "../common/rdt_packet.h"
 #include "../common/logger.h"
-
 RDTSender::RDTSender(UDPSocket &socket)
     : udp(socket)
 {

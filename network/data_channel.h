@@ -28,7 +28,9 @@ public:
                   unsigned short port,
                 TransferType type = TransferType::BINARY);
 
-    bool receiveFile();
+    // outputDir: xem giải thích trong FileReceiver::receiveFile() --
+    // truyền thư mục RIÊNG THEO SESSION để tránh 2 client ghi đè lẫn nhau.
+    bool receiveFile(const std::string& outputDir = "server_files");
     // Chờ ĐÚNG 1 gói "chào hỏi" (SYN) từ client, dùng cho hướng PASV+RETR/LIST
     // -- server chỉ biết port NÓ tự bind để nhận, chưa biết địa chỉ client
     // lắng nghe ở đâu; gói SYN này giúp "học" được địa chỉ đó trước khi gửi.
@@ -70,7 +72,7 @@ private:
     bool opened;
     DataChannelConfig config;
     bool busy = false;
-     SlidingWindowSender* windowSender = nullptr;
+    SlidingWindowSender* windowSender = nullptr;
 };
 
 #endif

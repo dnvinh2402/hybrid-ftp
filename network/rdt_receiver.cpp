@@ -8,11 +8,13 @@ RDTReceiver::RDTReceiver(UDPSocket &socket, bool simulateAckLoss)
     : udp(socket), simulateAckLoss(simulateAckLoss)
 {
 }
+
 void RDTReceiver::resetSession()
 {
     receiveCount       = 0;
     firstPacketOfSession = true;
 }
+
 bool RDTReceiver::receive(RDTPacket &packet,
                           std::string &senderIp,
                           unsigned short &senderPort)

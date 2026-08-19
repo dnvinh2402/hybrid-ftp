@@ -17,7 +17,7 @@ void FileReceiver::abortTransfer()
 {
     aborted.store(true);
 }
-bool FileReceiver::receiveFile()
+bool FileReceiver::receiveFile(const std::string& outputDir)
 {
     resetSession();
     // Reset trạng thái RDTReceiver (bộ đếm, cờ firstPacketOfSession) để
@@ -76,7 +76,7 @@ bool FileReceiver::receiveFile()
             log_info("FileReceiver: ABOR flag received from peer data channel.");
             if (file.is_open()) file.close();
             if (metadataReceived) {
-                std::filesystem::remove("server_files/" + session.fileName);
+                std::filesystem::remove(outputDir + "/" + session.fileName);
             }
             return false;
         }
@@ -110,8 +110,8 @@ bool FileReceiver::receiveFile()
             log_info("File name        : " + session.fileName);
             log_info("File size        : " + std::to_string(session.fileSize));
 
-            std::filesystem::create_directories("server_files");
-            std::string outputPath = "server_files/" + std::string(metadata.fileName);
+            std::filesystem::create_directories(outputDir);
+            std::string outputPath = outputDir + "/" + std::string(metadata.fileName);
 
             file.open(outputPath, std::ios::binary);
             if (!file.is_open())

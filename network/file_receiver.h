@@ -5,7 +5,6 @@
 #include "../common/rdt_packet.h"
 #include "rdt_receiver.h"
 #include "../common/logger.h"
-#include "../common/rdt_packet.h"
 #include "../common/file_metadata.h"
 #include "packet_parser.h"
 #include <atomic>
@@ -22,7 +21,7 @@ private:
 public:
     explicit FileReceiver(RDTReceiver &receiver);
     void resetSession();
-    bool receiveFile();
+    bool receiveFile(const std::string& outputDir = "server_files");
     void printSummary() const;
     const TransferSession& getSession() const;
     void abortTransfer();
