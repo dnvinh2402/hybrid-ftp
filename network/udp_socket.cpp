@@ -1,8 +1,11 @@
 #include "udp_socket.h"
+
 #include "../common/logger.h"
+
 #include <array>
-#include <string>
 #include <cstring>
+#include <string>
+
 UDPSocket::UDPSocket()
 {
     socketFd = INVALID_SOCKET;
@@ -15,19 +18,25 @@ UDPSocket::~UDPSocket()
 
 bool UDPSocket::create()
 {
-    socketFd = socket(AF_INET, SOCK_DGRAM, 0);
+    socketFd =
+        socket(
+            AF_INET,
+            SOCK_DGRAM,
+            0);
 
     if (socketFd == INVALID_SOCKET)
     {
-#ifdef _WIN32
-        std::cout << "WSA Error = " << WSAGetLastError() << std::endl;
-#endif
-        //tam de test
-        log_error("Failed to create UDP socket.");
+        log_error(
+            "Failed to create UDP socket. "
+            "OS error="
+            + std::to_string(
+                SocketPlatform::lastError()));
+
         return false;
     }
 
-    log_info("UDP socket created successfully.");
+    log_info(
+        "UDP socket created successfully.");
 
     return true;
 }
@@ -36,16 +45,17 @@ void UDPSocket::close()
 {
     if (socketFd != INVALID_SOCKET)
     {
-#ifdef _WIN32
-        closesocket(socketFd);
-#else
-        ::close(socketFd);
-#endif
-        socketFd = INVALID_SOCKET;
+        SocketPlatform::close(
+            socketFd);
 
-        log_info("UDP socket closed.");
+        socketFd =
+            INVALID_SOCKET;
+
+        log_info(
+            "UDP socket closed.");
     }
 }
+
 bool UDPSocket::bind(unsigned short port)
 {
     sockaddr_in address{};
@@ -54,11 +64,17 @@ bool UDPSocket::bind(unsigned short port)
     address.sin_addr.s_addr = INADDR_ANY;
     address.sin_port = htons(port);
 
-    if (::bind(socketFd,
-               reinterpret_cast<sockaddr*>(&address),
-               sizeof(address)) == SOCKET_ERROR)
+    if (::bind(
+            socketFd,
+            reinterpret_cast<sockaddr*>(&address),
+            sizeof(address))
+        == SOCKET_ERROR)
     {
-        log_error("Failed to bind UDP socket.");
+        log_error(
+            "Failed to bind UDP socket. "
+            "OS error="
+            + std::to_string(
+                SocketPlatform::lastError()));
 
         return false;
     }
@@ -73,7 +89,7 @@ bool UDPSocket::receivePacket(RDTPacket& packet,
                               unsigned short& senderPort)
 {
     sockaddr_in senderAddr{};
-    socklen_t addrLen = sizeof(senderAddr);
+    SocketPlatform::Length addrLen = sizeof(senderAddr);
 
     uint8_t buffer[RDT_HEADER_SIZE + MAX_PAYLOAD_SIZE];
 

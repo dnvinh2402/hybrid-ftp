@@ -17,6 +17,7 @@ set(COMMON_HEADERS
     common/protocol.h
     common/rdt_packet.h
     common/sha256.h
+    common/socket_platform.h
 )
 
 set(COMMON_SOURCES
@@ -59,8 +60,6 @@ set(NETWORK_HEADERS
     network/udp_socket.h
     network/sliding_window_sender.h
 )
-
-
 
 add_executable(ftp_server
     server/main_server.cpp
@@ -125,3 +124,44 @@ add_executable(concurrency_tests
 )
 target_include_directories(concurrency_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_test(NAME concurrency_tests COMMAND concurrency_tests)
+
+add_executable(
+    command_tests
+    tests/command_tests.cpp
+)
+
+target_include_directories(
+    command_tests
+    PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+add_test(
+    NAME command_tests
+    COMMAND command_tests
+)
+
+add_executable(
+    socket_compat_tests
+    tests/socket_compat_tests.cpp
+    network/udp_socket.cpp
+)
+
+target_include_directories(
+    socket_compat_tests
+    PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+if(WIN32)
+    target_link_libraries(
+        socket_compat_tests
+        PRIVATE
+        ws2_32
+    )
+endif()
+
+add_test(
+    NAME socket_compat_tests
+    COMMAND socket_compat_tests
+)

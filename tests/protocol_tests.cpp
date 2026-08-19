@@ -41,6 +41,6 @@ int main()
     fs::remove(userFile);
     fs::remove(hashFile);
 
-    std::cout << "protocol_tests passed\n";
+    std::cout << "[TEST][PASS] protocol_tests\n";
     return 0;
 }

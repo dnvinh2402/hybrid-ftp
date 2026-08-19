@@ -12,24 +12,9 @@
 #include "../common/sha256.h"
 #include "../common/logger.h"
 #include "../common/protocol.h"
+#include "../common/socket_platform.h"
 #include "../network/data_channel.h"
 #include "../network/data_channel_config.h"
-
-#ifdef _WIN32
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#pragma comment(lib, "ws2_32.lib")
-typedef int socklen_t;
-#else
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <unistd.h>
-typedef int SOCKET;
-#define INVALID_SOCKET -1
-#define SOCKET_ERROR -1
-#define closesocket close
-#endif
 
 #define SERVER_PORT 2121
 #define BUFFER_SIZE 1024
@@ -42,25 +27,17 @@ const fs::path SERVER_ROOT = fs::absolute("ftp_root");
 AuthenticationManager g_authenticationManager;
 SessionRegistry g_sessionRegistry;
 
-// Hàm khởi tạo thư viện Socket (bắt buộc trên Windows)
-void init_sockets()
+// Hàm khởi tạo Socket
+bool init_sockets()
 {
-#ifdef _WIN32
-    WSADATA wsaData;
-    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0)
-    {
-        log_error("Failed to initialize Winsock.");
-        exit(EXIT_FAILURE);
-    }
-#endif
+    return
+        SocketPlatform::initialize();
 }
 
 // Hàm dọn dẹp Socket khi đóng chương trình
 void cleanup_sockets()
 {
-#ifdef _WIN32
-    WSACleanup();
-#endif
+    SocketPlatform::cleanup();
 }
 
 void send_reply(SOCKET client_socket, const std::string &reply)
@@ -225,7 +202,7 @@ bool parsePortArg(const std::string &arg, std::string &outIp, int &outPort)
 std::string getLocalIp(SOCKET client_socket)
 {
     sockaddr_in localAddr{};
-    socklen_t len = sizeof(localAddr);
+    SocketPlatform::Length len = sizeof(localAddr);
     getsockname(client_socket, (struct sockaddr *)&localAddr, &len); // lấy địa chỉ IP và port mà socket client_socket đang sử dụng ở phía server.
     char ipBuf[INET_ADDRSTRLEN];
     inet_ntop(AF_INET, &localAddr.sin_addr, ipBuf, sizeof(ipBuf)); // chuyển địa chỉ IP nhị phân (localAddr.sin_addr) thành chuỗi dạng "x.x.x.x".
@@ -1308,7 +1285,6 @@ void handle_client_session(SOCKET client_socket, const std::string &clientIp)
     std::string recv_buffer = "";
     char buffer[BUFFER_SIZE];
     bool is_quit = false;
-
     while (!is_quit)
     {
         int bytes_read = recv(client_socket, buffer, BUFFER_SIZE - 1, 0);
@@ -1344,7 +1320,7 @@ void handle_client_session(SOCKET client_socket, const std::string &clientIp)
     g_sessionRegistry.removeSession(session.sessionId);
     g_sessionRegistry.printSessions();
 
-    closesocket(client_socket);
+    SocketPlatform::close(client_socket);
     log_info("Closed client connection from " + clientIp + ".");
 }
 
@@ -1391,7 +1367,7 @@ int main()
     if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) == SOCKET_ERROR)
     {
         log_error("Bind failed. Port might be in use.");
-        closesocket(server_fd);
+        SocketPlatform::close(server_fd);
         cleanup_sockets();
         return 1;
     }
@@ -1400,7 +1376,7 @@ int main()
     if (listen(server_fd, 3) == SOCKET_ERROR)
     {
         log_error("Listen failed.");
-        closesocket(server_fd);
+        SocketPlatform::close(server_fd);
         cleanup_sockets();
         return 1;
     }
@@ -1411,10 +1387,10 @@ int main()
     while (true)
     {
         sockaddr_in client_addr{};
-        socklen_t addrlen = sizeof(client_addr);
+        SocketPlatform::Length addrlen = sizeof(client_addr);
 
         // Chờ kết nối mới từ Client
-        SOCKET client_socket = accept(server_fd, (struct sockaddr *)&client_addr, &addrlen);
+        SOCKET client_socket = accept(server_fd, reinterpret_cast<sockaddr*>(&client_addr), &addrlen);
         if (client_socket == INVALID_SOCKET)
         {
             log_error("Accept connection failed.");
@@ -1432,7 +1408,7 @@ int main()
     } // Kết thúc vòng lặp accept (Server tiếp tục chờ Client tiếp theo)
 
     // Đóng Server socket khi dừng Server
-    closesocket(server_fd);
+    SocketPlatform::close(server_fd);
     cleanup_sockets();
     return 0;
 }

@@ -1,9 +1,51 @@
-#include <fstream>
+#include <cstdint>
 #include <filesystem>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
+#include <string>
+
 #include "file_receiver.h"
 #include "../common/logger.h"
 
-FileReceiver::FileReceiver(RDTReceiver &receiver)
+namespace
+{
+void printReceiveProgress(
+    std::uint64_t bytesTransferred,
+    std::uint64_t totalBytes,
+    int &nextProgressMark)
+{
+    const int percent =
+        (totalBytes == 0)
+            ? 100
+            : static_cast<int>(
+                  (bytesTransferred * 100ULL)
+                  / totalBytes);
+
+    if (percent >= nextProgressMark ||
+        percent == 100)
+    {
+        std::cout
+            << "[TRANSFER][RECV] Progress: "
+            << std::setw(3)
+            << percent
+            << "% ("
+            << bytesTransferred
+            << "/"
+            << totalBytes
+            << " bytes)"
+            << std::endl;
+
+        while (nextProgressMark <= percent)
+        {
+            nextProgressMark += 10;
+        }
+    }
+}
+}
+
+FileReceiver::FileReceiver(
+    RDTReceiver &receiver)
     : rdtReceiver(receiver)
 {
 }
@@ -11,331 +53,533 @@ FileReceiver::FileReceiver(RDTReceiver &receiver)
 void FileReceiver::resetSession()
 {
     session = TransferSession();
-    aborted.store(false);   // reset trước mỗi phiên nhận mới
+    aborted.store(false);
 }
+
 void FileReceiver::abortTransfer()
 {
     aborted.store(true);
 }
-bool FileReceiver::receiveFile(const std::string& outputDir)
+
+bool FileReceiver::receiveFile(
+    const std::string &outputDir)
 {
     resetSession();
-    // Reset trạng thái RDTReceiver (bộ đếm, cờ firstPacketOfSession) để
-    // mỗi phiên nhận hoạt động độc lập.
+
+    // Reset RDT receiver state for
+    // every independent transfer.
     rdtReceiver.resetSession();
 
     FileMetadata metadata{};
+
     bool metadataReceived = false;
+
     std::ofstream file;
+
     int consecutiveTimeouts = 0;
+
+    int nextProgressMark = 10;
 
     while (!session.finished)
     {
-        // Kiểm tra abort flag — được set bởi ABOR handler trên thread khác
+        // ABOR can be requested
+        // from another thread.
         if (aborted.load())
         {
-            log_info("FileReceiver: aborted by ABOR command.");
-            if (file.is_open()) file.close();
+            log_info(
+                "FileReceiver: aborted "
+                "by ABOR command.");
+
+            if (file.is_open())
+            {
+                file.close();
+            }
+
+            if (metadataReceived)
+            {
+                std::error_code errorCode;
+
+                std::filesystem::remove(
+                    std::filesystem::path(
+                        outputDir)
+                        / session.fileName,
+                    errorCode);
+            }
+
             return false;
         }
-        RDTPacket packet;
-        std::string ip;
-        unsigned short port;
 
-        if (!rdtReceiver.receive(packet, ip, port))
+        RDTPacket packet{};
+
+        std::string ip;
+
+        unsigned short port = 0;
+
+        if (!rdtReceiver.receive(
+                packet,
+                ip,
+                port))
         {
             consecutiveTimeouts++;
-            log_error("Receive timeout (" + std::to_string(consecutiveTimeouts) +
-                      "/" + std::to_string(MAX_CONSECUTIVE_TIMEOUTS) + ").");
 
-            if (consecutiveTimeouts >= MAX_CONSECUTIVE_TIMEOUTS)
+            log_error(
+                "Receive timeout ("
+                + std::to_string(
+                    consecutiveTimeouts)
+                + "/"
+                + std::to_string(
+                    MAX_CONSECUTIVE_TIMEOUTS)
+                + ").");
+
+            if (consecutiveTimeouts >=
+                MAX_CONSECUTIVE_TIMEOUTS)
             {
-                log_error("Sender unresponsive. Aborting transfer.");
-                if (file.is_open()) file.close();
+                log_error(
+                    "Sender unresponsive. "
+                    "Aborting transfer.");
+
+                if (file.is_open())
+                {
+                    file.close();
+                }
+
+                if (metadataReceived)
+                {
+                    std::error_code errorCode;
+
+                    std::filesystem::remove(
+                        std::filesystem::path(
+                            outputDir)
+                            / session.fileName,
+                        errorCode);
+                }
+
                 return false;
             }
+
             continue;
         }
+
         consecutiveTimeouts = 0;
 
-        // ── Kiểm tra version / magic trước ──────────────────────────────
-        if (packet.header.version != RDT_VERSION)
+        // Validate packet header.
+        if (packet.header.version !=
+            RDT_VERSION)
         {
-            log_error("Unsupported protocol version.");
-            if (file.is_open()) file.close();
-            return false;
-        }
-        if (packet.header.magic != RDT_MAGIC)
-        {
-            log_error("Invalid protocol magic.");
-            if (file.is_open()) file.close();
-            return false;
-        }
-        if (packet.header.flags & RDTFlag::ABOR)
-        {
-            log_info("FileReceiver: ABOR flag received from peer data channel.");
-            if (file.is_open()) file.close();
-            if (metadataReceived) {
-                std::filesystem::remove(outputDir + "/" + session.fileName);
+            log_error(
+                "Unsupported protocol version.");
+
+            if (file.is_open())
+            {
+                file.close();
             }
+
             return false;
         }
-        // ── Parse metadata ───────────────────────────────────────────────
-        bool isMeta = PacketParser::parseMetadata(packet, metadata);
 
-        if (!metadataReceived && !isMeta)
+        if (packet.header.magic !=
+            RDT_MAGIC)
         {
-            log_error("First packet must be META.");
-            if (file.is_open()) file.close();
+            log_error(
+                "Invalid protocol magic.");
+
+            if (file.is_open())
+            {
+                file.close();
+            }
+
             return false;
         }
 
-        session.remoteIp   = ip;
-        session.remotePort = port;
+        // Data-plane ABOR packet.
+        if (packet.header.flags &
+            RDTFlag::ABOR)
+        {
+            log_info(
+                "FileReceiver: ABOR flag "
+                "received from peer data channel.");
 
-        // ── META packet ──────────────────────────────────────────────────
-        // if (isMeta)
-        // {
-        //     if (metadataReceived)
-        //     {
-        //         log_info("Duplicate META packet (retransmit), re-ACKed.");
-        //         // META đã được ACK bởi RDTReceiver::receive() → chỉ skip
-        //         continue;
-        //     }
+            if (file.is_open())
+            {
+                file.close();
+            }
 
-        //     session.fileName = metadata.fileName;
-        //     session.fileSize = metadata.fileSize;
+            if (metadataReceived)
+            {
+                std::error_code errorCode;
 
-        //     log_info("Connected sender : " + ip + ":" + std::to_string(port));
-        //     log_info("File name        : " + session.fileName);
-        //     log_info("File size        : " + std::to_string(session.fileSize));
+                std::filesystem::remove(
+                    std::filesystem::path(
+                        outputDir)
+                        / session.fileName,
+                    errorCode);
+            }
 
-        //     std::filesystem::create_directories(outputDir);
-        //     std::string outputPath = outputDir + "/" + std::string(metadata.fileName);
+            return false;
+        }
 
-        //     file.open(outputPath, std::ios::binary);
-        //     if (!file.is_open())
-        //     {
-        //         log_error("Cannot create output file: " + outputPath);
-        //         return false;
-        //     }
+        const bool isMeta =
+            PacketParser::parseMetadata(
+                packet,
+                metadata);
 
-        //     metadataReceived    = true;
-        //     session.expectedSeq = packet.header.seq_num + 1;
+        if (!metadataReceived &&
+            !isMeta)
+        {
+            log_error(
+                "First packet must be META.");
 
-        //     log_info("--------------------------------");
-        //     log_info("Receive Start");
-        //     log_info("File : " + session.fileName);
-        //     log_info("Size : " + std::to_string(session.fileSize));
-        //     log_info("--------------------------------");
-        //     continue;
-        // }
+            if (file.is_open())
+            {
+                file.close();
+            }
 
-        // ── FIN packet ───────────────────────────────────────────────────
-        // if (PacketParser::isFin(packet))
-        // {
-        //     if (packet.header.seq_num != session.expectedSeq)
-        //     {
-        //         // GBN: FIN out-of-order → discard + cumulative ACK
-        //         //tatlog
-        //         // log_info("[GBN] FIN out-of-order seq=" +
-        //         //          std::to_string(packet.header.seq_num) +
-        //         //          " expected=" + std::to_string(session.expectedSeq));
-        //         if (session.expectedSeq > 0)
-        //             rdtReceiver.sendAck(session.expectedSeq - 1, ip, port);
-        //         continue;
-        //     }
-        //     rdtReceiver.sendAck(packet.header.seq_num, ip, port);
-        //     session.finished = true;
-        //     log_info("FIN received. Transfer finished.");
-        //     break;
-        // }
+            return false;
+        }
 
-        // if (!metadataReceived)
-        // {
-        //     log_error("Metadata missing.");
-        //     if (file.is_open()) file.close();
-        //     return false;
-        // }
+        session.remoteIp =
+            ip;
 
-        // ── Duplicate packet (seq < expected) ────────────────────────────
-        // Xảy ra khi GBN sender retransmit từ đầu cửa sổ: receiver đã ghi
-        // gói này rồi, chỉ cần gửi lại ACK để unblock sender.
-        // if (packet.header.seq_num < session.expectedSeq)
-        // {
-        //     log_info("[GBN] Duplicate seq=" + std::to_string(packet.header.seq_num) +
-        //              " (expected=" + std::to_string(session.expectedSeq) +
-        //              "). Resending ACK.");
-        //     rdtReceiver.sendAck(packet.header.seq_num, ip, port);
-        //     continue;
-        // }
+        session.remotePort =
+            port;
 
-        // ── Out-of-order packet (seq > expected) — GBN: discard ──────────
-        // GBN receiver KHÔNG buffer out-of-order. Gửi lại cumulative ACK
-        // của packet cuối đã nhận đúng thứ tự để trigger GBN retransmit.
-        // if (packet.header.seq_num > session.expectedSeq)
-        // {
-        //     // log_info("[GBN] Out-of-order seq=" + std::to_string(packet.header.seq_num) +
-        //     //          " expected=" + std::to_string(session.expectedSeq) +
-        //     //          ". Discarding, resending cumulative ACK.");
-        //     if (session.expectedSeq > 0)
-        //         rdtReceiver.sendAck(session.expectedSeq - 1, ip, port);
-        //     // expectedSeq = 0 → chưa nhận gói nào sau META → không gửi ACK
-        //     // (sender sẽ timeout và retransmit từ seq 1)
-        //     continue;
-        // }
+        // ==========================================
+        // 1. META PACKET
+        // ==========================================
 
-        // ── Đúng thứ tự: DATA packet ─────────────────────────────────────
-        // if (!PacketParser::isData(packet))
-        // {
-        //     log_error("Unexpected packet type at seq=" +
-        //               std::to_string(packet.header.seq_num));
-        //     continue;
-        // }
-
-        // file.write(packet.payload,
-        //            static_cast<std::streamsize>(packet.header.payload_len));
-
-        // if (file.fail())
-        // {
-        //     log_error("Write file failed.");
-        //     file.close();
-        //     return false;
-        // }
-
-        // session.expectedSeq++;
-        // session.bytesTransferred  += packet.header.payload_len;
-        // session.packetsTransferred++;
-
-        //tatlog
-        // log_info("Packet seq=" + std::to_string(packet.header.seq_num) +
-        //          " received (" + std::to_string(packet.header.payload_len) +
-        //          " bytes). Total=" + std::to_string(session.bytesTransferred));
-
-
-
-
-
-        // ── 1. META packet ──────────────────────────────────────────────────
         if (isMeta)
         {
             if (metadataReceived)
             {
-                log_info("Duplicate META packet (retransmit), re-ACKed.");
-                rdtReceiver.sendAck(packet.header.seq_num, ip, port); // FIX: Gửi lại ACK nếu bị gửi trùng META
+                log_info(
+                    "Duplicate META packet "
+                    "(retransmit), re-ACKed.");
+
+                rdtReceiver.sendAck(
+                    packet.header.seq_num,
+                    ip,
+                    port);
+
                 continue;
             }
 
-            session.fileName = metadata.fileName;
-            session.fileSize = metadata.fileSize;
+            session.fileName =
+                metadata.fileName;
 
-            std::filesystem::create_directories(outputDir);
-            std::string outputPath = outputDir + "/" + std::string(metadata.fileName);
+            session.fileSize =
+                metadata.fileSize;
 
-            file.open(outputPath, std::ios::binary);
+            std::filesystem::
+                create_directories(
+                    outputDir);
+
+            const std::filesystem::path
+                outputPath =
+                    std::filesystem::path(
+                        outputDir)
+                    / session.fileName;
+
+            if (session.fileSize == 0)
+            {
+                printReceiveProgress(
+                    0,
+                    0,
+                    nextProgressMark);
+            }
+
+            log_info(
+                "Connected sender : "
+                + session.remoteIp
+                + ":"
+                + std::to_string(
+                    session.remotePort));
+
+            log_info(
+                "File name        : "
+                + session.fileName);
+
+            log_info(
+                "File size        : "
+                + std::to_string(
+                    session.fileSize));
+
+            file.open(
+                outputPath,
+                std::ios::binary);
+
             if (!file.is_open())
             {
-                log_error("Cannot create output file: " + outputPath);
+                log_error(
+                    "Cannot create output file: "
+                    + outputPath.string());
+
                 return false;
             }
 
-            metadataReceived    = true;
-            session.expectedSeq = packet.header.seq_num + 1;
+            metadataReceived =
+                true;
 
-            rdtReceiver.sendAck(packet.header.seq_num, ip, port);
+            session.expectedSeq =
+                packet.header.seq_num + 1;
+
+            // Explicit META ACK retained
+            // for Go-Back-N behavior.
+            rdtReceiver.sendAck(
+                packet.header.seq_num,
+                ip,
+                port);
+
+            log_info(
+                "================================");
+
+            log_info(
+                "Receive Start");
+
+            log_info(
+                "File : "
+                + session.fileName);
+
+            log_info(
+                "Size : "
+                + std::to_string(
+                    session.fileSize));
+
+            log_info(
+                "================================");
+
+            log_info(
+                "Metadata received.");
+
             continue;
         }
 
-        // ── 2. FIN packet ───────────────────────────────────────────────────
-        if (PacketParser::isFin(packet))
+        // ==========================================
+        // 2. FIN PACKET
+        // ==========================================
+
+        if (PacketParser::isFin(
+                packet))
         {
-            if (packet.header.seq_num != session.expectedSeq)
+            if (packet.header.seq_num !=
+                session.expectedSeq)
             {
-                if (session.expectedSeq > 0)
-                    rdtReceiver.sendAck(session.expectedSeq - 1, ip, port);
+                if (session.expectedSeq >
+                    0)
+                {
+                    rdtReceiver.sendAck(
+                        session.expectedSeq - 1,
+                        ip,
+                        port);
+                }
+
                 continue;
             }
 
-            rdtReceiver.sendAck(packet.header.seq_num, ip, port);
-            session.finished = true;
-            log_info("FIN received. Transfer finished.");
+            rdtReceiver.sendAck(
+                packet.header.seq_num,
+                ip,
+                port);
+
+            session.finished =
+                true;
+
+            log_info(
+                "FIN received. "
+                "Transfer finished.");
+
             break;
         }
 
         if (!metadataReceived)
         {
-            log_error("Metadata missing.");
-            if (file.is_open()) file.close();
+            log_error(
+                "Metadata missing.");
+
+            if (file.is_open())
+            {
+                file.close();
+            }
+
             return false;
         }
 
-        if (packet.header.seq_num < session.expectedSeq)
+        // ==========================================
+        // 3. DUPLICATE PACKET
+        // ==========================================
+
+        if (packet.header.seq_num <
+            session.expectedSeq)
         {
-            rdtReceiver.sendAck(packet.header.seq_num, ip, port);
-            continue;
-        }
-        if (packet.header.seq_num > session.expectedSeq)
-        {
-            if (session.expectedSeq > 0)
-                rdtReceiver.sendAck(session.expectedSeq - 1, ip, port);
-            continue;
-        }
-        if (!PacketParser::isData(packet))
-        {
-            log_error("Unexpected packet type at seq=" + std::to_string(packet.header.seq_num));
+            rdtReceiver.sendAck(
+                packet.header.seq_num,
+                ip,
+                port);
+
             continue;
         }
 
-        file.write(packet.payload, static_cast<std::streamsize>(packet.header.payload_len));
+        // ==========================================
+        // 4. OUT-OF-ORDER PACKET
+        //    Go-Back-N receiver does not buffer it.
+        // ==========================================
+
+        if (packet.header.seq_num >
+            session.expectedSeq)
+        {
+            if (session.expectedSeq >
+                0)
+            {
+                rdtReceiver.sendAck(
+                    session.expectedSeq - 1,
+                    ip,
+                    port);
+            }
+
+            continue;
+        }
+
+        // ==========================================
+        // 5. DATA PACKET
+        // ==========================================
+
+        if (!PacketParser::isData(
+                packet))
+        {
+            log_error(
+                "Unexpected packet type at seq="
+                + std::to_string(
+                    packet.header.seq_num));
+
+            continue;
+        }
+
+        file.write(
+            packet.payload,
+            static_cast<
+                std::streamsize>(
+                packet.header.payload_len));
 
         if (file.fail())
         {
-            log_error("Write file failed.");
+            log_error(
+                "Write file failed.");
+
             file.close();
+
             return false;
         }
 
-
-        rdtReceiver.sendAck(packet.header.seq_num, ip, port);
+        // ACK only after payload
+        // has been written successfully.
+        rdtReceiver.sendAck(
+            packet.header.seq_num,
+            ip,
+            port);
 
         session.expectedSeq++;
-        session.bytesTransferred   += packet.header.payload_len;
+
+        session.bytesTransferred +=
+            packet.header.payload_len;
+
         session.packetsTransferred++;
+
+        printReceiveProgress(
+            session.bytesTransferred,
+            session.fileSize,
+            nextProgressMark);
+
+        log_info(
+            "Packet "
+            + std::to_string(
+                packet.header.seq_num)
+            + " received ("
+            + std::to_string(
+                packet.header.payload_len)
+            + " bytes).");
     }
 
     if (file.is_open())
-        file.close();
-
-    log_info("Receive complete.");
-
-    if (session.bytesTransferred != session.fileSize)
     {
-        log_error("File size mismatch: got=" + std::to_string(session.bytesTransferred) +
-                  " expected=" + std::to_string(session.fileSize));
+        file.close();
+    }
+
+    log_info(
+        "Receive complete.");
+
+    if (session.bytesTransferred !=
+        session.fileSize)
+    {
+        log_error(
+            "File size mismatch: got="
+            + std::to_string(
+                session.bytesTransferred)
+            + " expected="
+            + std::to_string(
+                session.fileSize));
+
         return false;
     }
 
-    log_info("File verified OK.");
+    log_info(
+        "File verified OK.");
+
     printSummary();
+
     return true;
 }
 
 void FileReceiver::printSummary() const
 {
-    log_info("--------------------------------");
-    log_info("Receive Summary");
-    log_info("File         : " + session.fileName);
-    log_info("Sender       : " + session.remoteIp + ":" +
-             std::to_string(session.remotePort));
-    log_info("Packets      : " + std::to_string(session.packetsTransferred));
-    log_info("Bytes        : " + std::to_string(session.bytesTransferred));
-    log_info("Expected Seq : " + std::to_string(session.expectedSeq));
-    log_info("File Size    : " + std::to_string(session.fileSize));
-    log_info("Finished     : " + std::string(session.finished ? "Yes" : "No"));
-    log_info("--------------------------------");
+    log_info(
+        "================================");
+
+    log_info(
+        "Receive Summary");
+
+    log_info(
+        "File         : "
+        + session.fileName);
+
+    log_info(
+        "Sender       : "
+        + session.remoteIp
+        + ":"
+        + std::to_string(
+            session.remotePort));
+
+    log_info(
+        "Packets      : "
+        + std::to_string(
+            session.packetsTransferred));
+
+    log_info(
+        "Bytes        : "
+        + std::to_string(
+            session.bytesTransferred));
+
+    log_info(
+        "Expected Seq : "
+        + std::to_string(
+            session.expectedSeq));
+
+    log_info(
+        "File Size    : "
+        + std::to_string(
+            session.fileSize));
+
+    log_info(
+        "Finished     : "
+        + std::string(
+            session.finished
+                ? "Yes"
+                : "No"));
+
+    log_info(
+        "================================");
 }
 
-const TransferSession &FileReceiver::getSession() const
+const TransferSession &
+FileReceiver::getSession() const
 {
     return session;
 }

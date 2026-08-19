@@ -1,18 +1,19 @@
 #include "data_channel.h"
+
 #include "../common/logger.h"
+#include "../common/protocol.h"
+#include "../common/socket_platform.h"
+
 #include "udp_socket.h"
 #include "rdt_sender.h"
 #include "rdt_receiver.h"
 #include "file_sender.h"
 #include "file_receiver.h"
 #include "packet_builder.h"
-#include "../common/protocol.h"
-#include <fstream>
+
 #include <cstdio>
-#ifdef _WIN32
-#include <winsock2.h>
-#pragma comment(lib, "ws2_32.lib")
-#endif
+#include <fstream>
+
 DataChannel::DataChannel()
 {
     socket = nullptr;
@@ -55,23 +56,20 @@ void DataChannel::resetResources()
 }
 bool DataChannel::initializeNetwork()
 {
-#ifdef _WIN32
-    WSADATA wsa;
-    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0)
+    if (!SocketPlatform::initialize())
     {
-        log_error("WSAStartup failed.");
+        log_error(
+            "Failed to initialize "
+            "socket platform.");
+
         return false;
     }
-    log_info("Winsock initialized.");
-#endif
+
     return true;
 }
 void DataChannel::cleanupNetwork()
 {
-#ifdef _WIN32
-    WSACleanup();
-    log_info("Winsock cleaned up.");
-#endif
+    SocketPlatform::cleanup();
 }
 bool DataChannel::open(const DataChannelConfig &config)
 {
@@ -127,11 +125,11 @@ bool DataChannel::open(const DataChannelConfig &config)
                                              ? "Go-Back-N (W=32)"
                                              : "Stop-and-Wait"));
     opened = true;
-    log_info("--------------------------------");
+    log_info("================================");
     log_info("Open DataChannel");
     log_info("Local Port : " + std::to_string(this->config.localPort));
     log_info("Timeout : " + std::to_string(this->config.timeout) + " ms");
-    log_info("--------------------------------");
+    log_info("================================");
 
     return true;
 }
@@ -144,14 +142,14 @@ void DataChannel::close()
     if (!opened)
         return;
 
-    log_info("--------------------------------");
+    log_info("================================");
     log_info("Closing DataChannel");
     log_info("Local Port : " + std::to_string(config.localPort));
     resetResources();
     cleanupNetwork();
     busy = false;
     opened = false;
-    log_info("--------------------------------");
+    log_info("================================");
 }
 
 static bool createCRLFFile(const std::string &srcPath, const std::string &destPath)

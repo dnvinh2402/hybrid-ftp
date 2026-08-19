@@ -79,14 +79,15 @@ void SessionRegistry::printSessions() const
 {
     const std::vector<SessionInfo> snapshot = getSessions();
 
-    std::cout << "\n========== ACTIVE SESSIONS ==========\n";
+    std::cout << "\n==================== ACTIVE SESSIONS ====================\n";
 
     std::cout
         << std::left
         << std::setw(10) << "ID"
-        << std::setw(18) << "CLIENT IP"
-        << std::setw(16) << "USER"
-        << "STATE\n";
+        << std::setw(20) << "CLIENT IP"
+        << std::setw(18) << "USER"
+        << "STATE\n"
+        << "=========================================================\n";
 
     for (const SessionInfo& session : snapshot)
     {
@@ -104,17 +105,16 @@ void SessionRegistry::printSessions() const
             << std::left
             << std::setw(10)
             << session.sessionId
-            << std::setw(18)
+            << std::setw(20)
             << session.clientIp
-            << std::setw(16)
+            << std::setw(18)
             << user
             << state
             << '\n';
     }
 
     std::cout
-        << "Total: " << snapshot.size() << '\n';
-
-    std::cout
-        << "=====================================\n\n";
+        << "=========================================================\n"
+        << "Total active sessions: " << snapshot.size() << '\n'
+        << "=========================================================\n\n";
 }

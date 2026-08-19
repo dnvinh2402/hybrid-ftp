@@ -54,6 +54,6 @@ int main()
 
     assert(registry.getSessionCount() == 0);
 
-    std::cout << "concurrency_tests passed\n";
+    std::cout << "[TEST][PASS] concurrency_tests\n";
     return 0;
 }
