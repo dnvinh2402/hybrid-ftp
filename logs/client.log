@@ -1,0 +1,36 @@
+[2026-08-19 21:58:54] [INFO] Connecting to 127.0.0.1:2121...
+[2026-08-19 21:58:54] [INFO] Connected!
+[2026-08-19 21:59:22] [INFO] UDP socket created successfully.
+[2026-08-19 21:59:22] [INFO] UDP socket bound to port 0
+[2026-08-19 21:59:22] [INFO] ================================
+[2026-08-19 21:59:22] [INFO] Open DataChannel
+[2026-08-19 21:59:22] [INFO] Local Port : 0
+[2026-08-19 21:59:22] [INFO] Timeout    : 5000 ms
+[2026-08-19 21:59:22] [INFO] Mode       : Go-Back-N (W=16)
+[2026-08-19 21:59:22] [INFO] ================================
+[2026-08-19 21:59:22] [INFO] Uploading (PASV) client_files/picture.png ...
+[2026-08-19 21:59:22] [INFO] ================================
+[2026-08-19 21:59:22] [INFO] Transfer Start (Go-Back-N (W=16))
+[2026-08-19 21:59:22] [INFO] File   : client_files/picture.png
+[2026-08-19 21:59:22] [INFO] Size   : 22181 bytes
+[2026-08-19 21:59:22] [INFO] Remote : 127.0.0.1:50251
+[2026-08-19 21:59:22] [INFO] ================================
+[2026-08-19 21:59:22] [INFO] [GBN] Flushing 1 packets in window...
+[2026-08-19 21:59:22] [INFO] [GBN] Flush complete. All packets ACKed.
+[2026-08-19 21:59:22] [INFO] Metadata sent. Name=picture.png Size=22181
+[2026-08-19 21:59:22] [INFO] [GBN] Flushing 1 packets in window...
+[2026-08-19 21:59:22] [INFO] [GBN] Flush complete. All packets ACKed.
+[2026-08-19 21:59:22] [INFO] FIN sent and ACKed.
+[2026-08-19 21:59:22] [INFO] ================================
+[2026-08-19 21:59:22] [INFO] Transfer Summary
+[2026-08-19 21:59:22] [INFO] File     : client_files/picture.png
+[2026-08-19 21:59:22] [INFO] Packets  : 16
+[2026-08-19 21:59:22] [INFO] Bytes    : 22181
+[2026-08-19 21:59:22] [INFO] Size     : 22181
+[2026-08-19 21:59:22] [INFO] Time     : 0.01 s
+[2026-08-19 21:59:22] [INFO] Speed    : 1.96 MB/s
+[2026-08-19 21:59:22] [INFO] Mode     : Go-Back-N (W=16)
+[2026-08-19 21:59:22] [INFO] Finished : Yes
+[2026-08-19 21:59:22] [INFO] ================================
+[2026-08-19 21:59:22] [INFO] Closing DataChannel.
+[2026-08-19 21:59:22] [INFO] UDP socket closed.

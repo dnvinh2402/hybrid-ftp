@@ -507,15 +507,6 @@ bool FileReceiver::receiveFile(
             session.bytesTransferred,
             session.fileSize,
             nextProgressMark);
-
-        log_info(
-            "Packet "
-            + std::to_string(
-                packet.header.seq_num)
-            + " received ("
-            + std::to_string(
-                packet.header.payload_len)
-            + " bytes).");
     }
 
     if (file.is_open())

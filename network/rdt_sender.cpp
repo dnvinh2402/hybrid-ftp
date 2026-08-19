@@ -16,7 +16,7 @@ bool RDTSender::send(const RDTPacket &packet,
 
     for (int retry = 1; retry <= maxRetry; retry++)
     {
-        log_info("Send seq=" + std::to_string(seq) +
+        log_debug("Send seq=" + std::to_string(seq) +
                  " attempt=" + std::to_string(retry) +
                  "/" + std::to_string(maxRetry));
 
@@ -28,7 +28,7 @@ bool RDTSender::send(const RDTPacket &packet,
 
         if (waitAck(seq))
         {
-            log_info("ACK received for seq=" + std::to_string(seq));
+            log_debug("ACK received for seq=" + std::to_string(seq));
             return true;
         }
 
@@ -87,7 +87,7 @@ bool RDTSender::waitAck(uint32_t expectedSeq)
         if (ack.header.ack_num != expectedSeq)
         {
             // ACK stale từ lần retransmit cũ -- đọc tiếp thay vì return false.
-            log_info("Stale ACK ack_num=" + std::to_string(ack.header.ack_num) +
+            log_debug("Stale ACK ack_num=" + std::to_string(ack.header.ack_num) +
                      " expected=" + std::to_string(expectedSeq) + ", skipping.");
             continue;
         }

@@ -52,7 +52,7 @@ void SlidingWindowSender::beginSession(const std::string &ip, unsigned short por
         while (udp.receivePacket(dummy, dip, dport))
             drained++;
         if (drained > 0)
-            log_info("[GBN] beginSession: drained " +
+            log_debug("[GBN] beginSession: drained " +
                      std::to_string(drained) +
                      " stale packet(s) from previous session.");
     }

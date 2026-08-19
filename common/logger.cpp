@@ -109,7 +109,14 @@ void error(const std::string &message)
 
 void debug(const std::string &message)
 {
-    writeMessage("DEBUG", message, std::cout);
+#ifdef HYBRIDFTP_DEBUG_LOG
+    writeMessage(
+        "DEBUG",
+        message,
+        std::cout);
+#else
+    (void)message;
+#endif
 }
 }
 

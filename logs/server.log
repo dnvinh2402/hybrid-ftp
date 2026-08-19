@@ -1,0 +1,101 @@
+[2026-08-19 21:58:48] [INFO] Starting Hybrid FTP Server on Port 2121...
+[2026-08-19 21:58:48] [INFO] Server root directory: /Users/DH/Documents/CSC10008/hybrid-ftp/ftp_root
+[2026-08-19 21:58:48] [INFO] Server is listening on port 2121. Waiting for connections...
+[2026-08-19 21:58:54] [INFO] Accepted TCP client: 127.0.0.1
+[2026-08-19 21:58:54] [INFO] New client connected from 127.0.0.1.
+[2026-08-19 21:58:54] [INFO] 
+==================== ACTIVE SESSIONS ====================
+ID        CLIENT IP           USER              STATE
+---------------------------------------------------------
+1         127.0.0.1           -                 IDLE
+---------------------------------------------------------
+Total active sessions: 1
+=========================================================
+
+[2026-08-19 21:59:03] [INFO] Session 1 | Client 127.0.0.1 | COMMAND | USER admin
+[2026-08-19 21:59:03] [INFO] 
+==================== ACTIVE SESSIONS ====================
+ID        CLIENT IP           USER              STATE
+---------------------------------------------------------
+1         127.0.0.1           admin             IDLE
+---------------------------------------------------------
+Total active sessions: 1
+=========================================================
+
+[2026-08-19 21:59:03] [INFO] Client set username: admin
+[2026-08-19 21:59:07] [INFO] Session 1 | Client 127.0.0.1 | COMMAND | PASS ********
+[2026-08-19 21:59:07] [INFO] 
+==================== ACTIVE SESSIONS ====================
+ID        CLIENT IP           USER              STATE
+---------------------------------------------------------
+1         127.0.0.1           admin             IDLE
+---------------------------------------------------------
+Total active sessions: 1
+=========================================================
+
+[2026-08-19 21:59:07] [INFO] User 'admin' authenticated.
+[2026-08-19 21:59:12] [INFO] Session 1 | Client 127.0.0.1 | COMMAND | TYPE I
+[2026-08-19 21:59:22] [INFO] Session 1 | Client 127.0.0.1 | COMMAND | PASV
+[2026-08-19 21:59:22] [INFO] UDP socket created successfully.
+[2026-08-19 21:59:22] [INFO] UDP socket bound to port 50251
+[2026-08-19 21:59:22] [INFO] ================================
+[2026-08-19 21:59:22] [INFO] Open DataChannel
+[2026-08-19 21:59:22] [INFO] Local Port : 50251
+[2026-08-19 21:59:22] [INFO] Timeout    : 2000 ms
+[2026-08-19 21:59:22] [INFO] Mode       : Go-Back-N (W=16)
+[2026-08-19 21:59:22] [INFO] ================================
+[2026-08-19 21:59:22] [INFO] Server entering PASSIVE mode -> 127.0.0.1:50251
+[2026-08-19 21:59:22] [INFO] Session 1 | Client 127.0.0.1 | COMMAND | STOR picture.png
+[2026-08-19 21:59:22] [INFO] 
+==================== ACTIVE SESSIONS ====================
+ID        CLIENT IP           USER              STATE
+---------------------------------------------------------
+1         127.0.0.1           admin             TRANSFERRING
+---------------------------------------------------------
+Total active sessions: 1
+=========================================================
+
+[2026-08-19 21:59:22] [INFO] Connected sender : 127.0.0.1:49756
+[2026-08-19 21:59:22] [INFO] File name        : picture.png
+[2026-08-19 21:59:22] [INFO] File size        : 22181
+[2026-08-19 21:59:22] [INFO] ================================
+[2026-08-19 21:59:22] [INFO] Receive Start
+[2026-08-19 21:59:22] [INFO] File : picture.png
+[2026-08-19 21:59:22] [INFO] Size : 22181
+[2026-08-19 21:59:22] [INFO] ================================
+[2026-08-19 21:59:22] [INFO] Metadata received.
+[2026-08-19 21:59:22] [INFO] FIN received. Transfer finished.
+[2026-08-19 21:59:22] [INFO] Receive complete.
+[2026-08-19 21:59:22] [INFO] File verified OK.
+[2026-08-19 21:59:22] [INFO] ================================
+[2026-08-19 21:59:22] [INFO] Receive Summary
+[2026-08-19 21:59:22] [INFO] File         : picture.png
+[2026-08-19 21:59:22] [INFO] Sender       : 127.0.0.1:49756
+[2026-08-19 21:59:22] [INFO] Packets      : 16
+[2026-08-19 21:59:22] [INFO] Bytes        : 22181
+[2026-08-19 21:59:22] [INFO] Expected Seq : 17
+[2026-08-19 21:59:22] [INFO] File Size    : 22181
+[2026-08-19 21:59:22] [INFO] Finished     : Yes
+[2026-08-19 21:59:22] [INFO] ================================
+[2026-08-19 21:59:22] [INFO] Closing DataChannel.
+[2026-08-19 21:59:22] [INFO] UDP socket closed.
+[2026-08-19 21:59:22] [INFO] 
+==================== ACTIVE SESSIONS ====================
+ID        CLIENT IP           USER              STATE
+---------------------------------------------------------
+1         127.0.0.1           admin             IDLE
+---------------------------------------------------------
+Total active sessions: 1
+=========================================================
+
+[2026-08-19 21:59:22] [INFO] Session 1 | Client 127.0.0.1 | COMMAND | HASH picture.png
+[2026-08-19 21:59:59] [INFO] Client disconnected: 127.0.0.1.
+[2026-08-19 21:59:59] [INFO] 
+==================== ACTIVE SESSIONS ====================
+ID        CLIENT IP           USER              STATE
+---------------------------------------------------------
+---------------------------------------------------------
+Total active sessions: 0
+=========================================================
+
+[2026-08-19 21:59:59] [INFO] Closed client connection from 127.0.0.1.

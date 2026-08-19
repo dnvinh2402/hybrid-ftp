@@ -93,7 +93,7 @@ void SessionRegistry::printSessions() const
         << std::setw(20) << "CLIENT IP"
         << std::setw(18) << "USER"
         << "STATE\n"
-        << "=========================================================\n";
+        << "---------------------------------------------------------\n";
 
     for (const SessionInfo &session : snapshot)
     {
@@ -117,7 +117,7 @@ void SessionRegistry::printSessions() const
     }
 
     output
-        << "=========================================================\n"
+        << "---------------------------------------------------------\n"
         << "Total active sessions: " << snapshot.size() << '\n'
         << "=========================================================\n";
 
