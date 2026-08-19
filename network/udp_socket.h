@@ -25,7 +25,7 @@ typedef int SOCKET;
 class UDPSocket 
 {
 private:
-    SOCKET socketFd;
+    SOCKET socketFd = INVALID_SOCKET;
 
 public:
     UDPSocket();

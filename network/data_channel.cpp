@@ -20,6 +20,7 @@ DataChannel::DataChannel()
     receiver = nullptr;
     fileSender = nullptr;
     fileReceiver = nullptr;
+    windowSender = nullptr;
     opened = false;
 }
 
@@ -41,6 +42,9 @@ void DataChannel::resetResources()
 
     delete receiver;
     receiver = nullptr;
+
+    delete windowSender;
+    windowSender = nullptr;
 
     if (socket != nullptr)
     {
@@ -108,9 +112,20 @@ bool DataChannel::open(const DataChannelConfig &config)
     // quyết định (mặc định false -> hành vi ACK bình thường).
     receiver = new RDTReceiver(*socket, this->config.simulateAckLoss);
 
+    if (this->config.useGBN)
+    {
+        windowSender = new SlidingWindowSender(*socket);
+        // SlidingWindowSender.WINDOW_SIZE override bằng config nếu muốn
+    }
+
     fileSender = new FileSender(*sender);
     fileReceiver = new FileReceiver(*receiver);
 
+    if (windowSender != nullptr)
+        fileSender->setWindowSender(windowSender);
+    log_info("Mode     : " + std::string(this->config.useGBN
+                                             ? "Go-Back-N (W=32)"
+                                             : "Stop-and-Wait"));
     opened = true;
     log_info("--------------------------------");
     log_info("Open DataChannel");
@@ -155,6 +170,18 @@ static bool createCRLFFile(const std::string &srcPath, const std::string &destPa
         prev = c;
     }
     return true;
+}
+int DataChannel::getSocketFd() const
+{
+    // Kiểm tra xem kênh đã mở và con trỏ socket đã được khởi tạo chưa
+    if (opened && socket != nullptr)
+    {
+        // Gọi hàm getSocketFd() của đối tượng UDPSocket
+        return static_cast<int>(socket->getSocketFd());
+    }
+    
+    // Nếu chưa mở kênh hoặc con trỏ null, trả về -1 theo đúng comment trong file header
+    return -1;
 }
 bool DataChannel::sendFile(
     const std::string &file,
@@ -268,9 +295,23 @@ bool DataChannel::receiveHandshake(std::string &outIp, unsigned short &outPort)
     log_info("Handshake OK. Client data address: " + outIp + ":" + std::to_string(outPort));
     return true;
 }
-
-int DataChannel::getSocketFd() const
+void DataChannel::abortTransfer()
 {
-    if (!opened || socket == nullptr) return -1;
-    return static_cast<int>(socket->getSocketFd());
+    if (!opened)
+        return;
+
+    log_info("DataChannel: Initiating abort sequence...");
+
+    if (fileReceiver != nullptr)
+    {
+        fileReceiver->abortTransfer();
+    }
+
+    if (fileSender != nullptr)
+    {
+        fileSender->abortTransfer();
+    }
+
+    // KHÔNG close() ở đây.
+    // Transfer hiện tại phải tự thoát trước.
 }

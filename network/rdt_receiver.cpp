@@ -8,7 +8,11 @@ RDTReceiver::RDTReceiver(UDPSocket &socket, bool simulateAckLoss)
     : udp(socket), simulateAckLoss(simulateAckLoss)
 {
 }
-
+void RDTReceiver::resetSession()
+{
+    receiveCount       = 0;
+    firstPacketOfSession = true;
+}
 bool RDTReceiver::receive(RDTPacket &packet,
                           std::string &senderIp,
                           unsigned short &senderPort)
@@ -21,8 +25,9 @@ bool RDTReceiver::receive(RDTPacket &packet,
 
     receiveCount++;
 
-    log_info("Receive packet #" + std::to_string(receiveCount));
-    log_info("SEQ = " + std::to_string(packet.header.seq_num));
+    //tatlog
+    // log_info("Receive packet #" + std::to_string(receiveCount));
+    // log_info("SEQ = " + std::to_string(packet.header.seq_num));
 
     if (!verifyChecksum(packet))
     {
@@ -41,14 +46,14 @@ bool RDTReceiver::receive(RDTPacket &packet,
         return true; 
     }
 
-    if (sendAck(packet.header.seq_num, senderIp, senderPort))
+    if (!sendAck(packet.header.seq_num, senderIp, senderPort))
     {
-        log_info("ACK sent successfully.");
+         log_error("Failed to send ACK for seq=" + std::to_string(packet.header.seq_num));
     }
-    else
-    {
-        log_error("Failed to send ACK.");
-    }
+    // else
+    // {
+    //     log_info("ACK sent for seq=" + std::to_string(packet.header.seq_num));
+    // }
     return true;
 }
 bool RDTReceiver::sendAck(uint32_t seq,

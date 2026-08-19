@@ -125,6 +125,16 @@ bool UDPSocket::sendPacket(const RDTPacket& packet,
     address.sin_family = AF_INET;
     address.sin_port = htons(port);
 
+    std::string cleanIp = ip;
+    cleanIp.erase(cleanIp.find_last_not_of(" \n\r\t") + 1);
+    cleanIp.erase(0, cleanIp.find_first_not_of(" \n\r\t"));
+
+    if (inet_pton(AF_INET, cleanIp.c_str(), &address.sin_addr) <= 0)
+    {
+        log_error("Eror format IP: '" + cleanIp + "'. inet_pton fail.");
+        return false;
+    }
+
     inet_pton(AF_INET,
               ip.c_str(),
               &address.sin_addr);
@@ -145,13 +155,22 @@ bool UDPSocket::sendPacket(const RDTPacket& packet,
                reinterpret_cast<sockaddr*>(&address),
                sizeof(address));
 
+    // if(sent == SOCKET_ERROR)
+    // {
+    //     log_error("Failed to send UDP packet.");
+    //     return false;
+    // }
     if(sent == SOCKET_ERROR)
     {
-        log_error("Failed to send UDP packet.");
+        // THÊM 2 DÒNG NÀY ĐỂ BẮT MÃ LỖI CHÍNH XÁC CỦA WINDOWS
+        int errCode = WSAGetLastError();
+        log_error("Failed to send UDP packet. WSA Error Code: " + std::to_string(errCode));
+        
         return false;
     }
 
-    log_debug("UDP packet sent.");
+    //tatlog
+    // log_debug("UDP packet sent.");
 
     return true;
 }

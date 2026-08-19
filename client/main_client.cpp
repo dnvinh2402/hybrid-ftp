@@ -325,42 +325,41 @@ void doPut(SOCKET sock, std::string& recv_buffer, const std::string& localPath, 
     g_active_channel.store(dataChannel);
 
     // 3. Tách luồng (detach) để luồng main được giải phóng, sẵn sàng nhận lệnh ABOR
-    std::thread([sock, &recv_buffer, dataChannel, localPath, serverIp, serverPort, cmdVerb]() {
-        log_info("Uploading (" + cmdVerb + ") " + localPath + " ...");
+    std::thread([sock, &recv_buffer, dataChannel, remoteName, localPath]() {
+        log_info("Downloading (PASV) " + remoteName + " ...");
         
-        bool ok = dataChannel->sendFile(localPath, serverIp, static_cast<unsigned short>(serverPort));
+        bool ok = dataChannel->receiveFile();
 
-        if (!ok) {
-            std::cout << "\nUpload failed at UDP layer (hoặc bị hủy bởi ABOR)." << std::endl;
-        } else {
-            std::cout << "\nUpload completed successfully." << std::endl;
-        }
-
-        // Dọn dẹp tài nguyên động
-        dataChannel->close();
-        delete dataChannel;
-        g_active_channel.store(nullptr); // thread-safe reset
-
-        // Chỉ đọc reply khi transfer THÀNH CÔNG (không bị ABOR)
-        // Khi bị abort: ABOR handler ở main thread sẽ đọc reply (426 + 226)
         if (ok) {
+            const TransferSession& recvInfo = dataChannel->getReceiveTransferSession();
+            fs::path receivedPath = fs::path("server_files") / recvInfo.fileName;
+            
+            std::error_code ec;
+            fs::rename(receivedPath, localPath, ec);
+            if (ec) {
+                std::cout << "\nDownloaded but could not move to " << localPath << std::endl;
+            } else {
+                std::cout << "\nSaved to " << localPath << std::endl;
+            }
+
+            // CHỈ ĐỌC MÃ 226 KHI TẢI THÀNH CÔNG THỰC SỰ
             std::string finalReply;
             if (receive_reply(sock, recv_buffer, finalReply)) {
-                std::cout << finalReply << std::endl;
+                std::cout << finalReply;
             }
+        } else {
+            std::cout << "\nDownload aborted or failed at UDP layer." << std::endl;
+            // KHI BỊ ABORT (!ok): RẢNH TAY THOÁT NGAY! 
+            // Không gọi receive_reply() ở đây để tránh tranh chấp với luồng chính ở Bước 4.
         }
 
-        // Đọc vét bộ đệm nếu server trả về thêm mã lỗi hủy (426)
-        if (!ok) {
-            std::string aborReply;
-            if (receive_reply(sock, recv_buffer, aborReply)) {
-                std::cout << aborReply << std::endl;
-            }
-        }
+        // Dọn dẹp tài nguyên
+        dataChannel->close();
+        delete dataChannel;
+        g_active_channel.store(nullptr); // Đánh báo cho Bước 3 của luồng chính biết là đã dọn xong
 
-        // Trả lại dấu nhắc lệnh ftp> cho màn hình console
         std::cout << "ftp> " << std::flush;
-
+        
     }).detach();
 }
 // void doGet(SOCKET sock, std::string& recv_buffer, const std::string& remoteName, std::string localPath) {
@@ -472,13 +471,11 @@ void doGet(SOCKET sock, std::string& recv_buffer, const std::string& remoteName,
 
     // 3. Tách luồng (detach) để giải phóng luồng chính
     std::thread([sock, &recv_buffer, dataChannel, remoteName, localPath]() {
-        log_info("Downloading " + remoteName + " ...");
+        log_info("Downloading (PASV) " + remoteName + " ...");
         
         bool ok = dataChannel->receiveFile();
 
-        if (!ok) {
-            std::cout << "\nDownload failed at UDP layer (hoặc bị hủy bởi ABOR)." << std::endl;
-        } else {
+        if (ok) {
             const TransferSession& recvInfo = dataChannel->getReceiveTransferSession();
             fs::path receivedPath = fs::path("server_files") / recvInfo.fileName;
             
@@ -489,25 +486,25 @@ void doGet(SOCKET sock, std::string& recv_buffer, const std::string& remoteName,
             } else {
                 std::cout << "\nSaved to " << localPath << std::endl;
             }
+
+            // CHỈ ĐỌC MÃ 226 KHI TẢI THÀNH CÔNG THỰC SỰ
+            std::string finalReply;
+            if (receive_reply(sock, recv_buffer, finalReply)) {
+                std::cout << finalReply;
+            }
+        } else {
+            std::cout << "\nDownload aborted or failed at UDP layer." << std::endl;
+            // KHI BỊ ABORT (!ok): RẢNH TAY THOÁT NGAY! 
+            // Không gọi receive_reply() ở đây để tránh tranh chấp với luồng chính ở Bước 4.
         }
 
         // Dọn dẹp tài nguyên
         dataChannel->close();
         delete dataChannel;
-        g_active_channel.store(nullptr); // thread-safe reset
+        g_active_channel.store(nullptr); // Đánh báo cho Bước 3 của luồng chính biết là đã dọn xong
 
-        // Chỉ đọc reply khi transfer THÀNH CÔNG (không bị ABOR)
-        // Khi bị abort: ABOR handler ở main thread sẽ đọc reply (426 + 226)
-        if (ok) {
-            std::string finalReply;
-            if (receive_reply(sock, recv_buffer, finalReply)) {
-                std::cout << finalReply << std::endl;
-            }
-        }
-
-        // Trả lại dấu nhắc lệnh cho CLI
         std::cout << "ftp> " << std::flush;
-
+        
     }).detach();
 }
 // ---------------------------------------------------------------------
@@ -591,13 +588,11 @@ void doGetViaPasv(SOCKET sock, std::string& recv_buffer, const std::string& remo
     std::string pasvReply = sendCommandAndGetReply(sock, recv_buffer, "PASV");
     std::string serverIp;
     int serverPort;
-    if (pasvReply.rfind("227", 0) != 0 || !parsePasvResponse(pasvReply, serverIp, serverPort))
-    {
+    if (pasvReply.rfind("227", 0) != 0 || !parsePasvResponse(pasvReply, serverIp, serverPort)) {
         std::cout << "PASV failed, cannot download." << std::endl;
         return;
     }
 
-    // 1. CHỈNH SỬA: Dùng cấp phát động thay vì cấp phát trên stack
     DataChannel* dataChannel = new DataChannel();
     DataChannelConfig cfg;
     cfg.localPort = 0;
@@ -605,7 +600,6 @@ void doGetViaPasv(SOCKET sock, std::string& recv_buffer, const std::string& remo
     cfg.maxRetry = 5;
     cfg.useGBN  = true;
     
-    // Thay dấu chấm (.) bằng mũi tên (->)
     if (!dataChannel->open(cfg)) {
         std::cout << "Cannot open local UDP data channel." << std::endl;
         delete dataChannel;
@@ -625,18 +619,14 @@ void doGetViaPasv(SOCKET sock, std::string& recv_buffer, const std::string& remo
 
     dataChannel->sendHandshake(serverIp, static_cast<unsigned short>(serverPort));
 
-    // 2. CHỈNH SỬA: Gán vào biến toàn cục và tách luồng từ đoạn này trở đi
     g_active_channel.store(dataChannel);
 
     std::thread([sock, &recv_buffer, dataChannel, remoteName, localPath]() {
         log_info("Downloading (PASV) " + remoteName + " ...");
         
-        // Quá trình này sẽ block bên trong luồng phụ, luồng main vẫn rảnh tay
         bool ok = dataChannel->receiveFile();
 
-        if (!ok) {
-            std::cout << "Download failed at UDP layer (xem log RDT phia tren)." << std::endl;
-        } else {
+        if (ok) {
             const TransferSession& recvInfo = dataChannel->getReceiveTransferSession();
             fs::path receivedPath = fs::path("server_files") / recvInfo.fileName;
             
@@ -647,34 +637,27 @@ void doGetViaPasv(SOCKET sock, std::string& recv_buffer, const std::string& remo
             } else {
                 std::cout << "\nSaved to " << localPath << std::endl;
             }
+
+            // CHỈ ĐỌC MÃ 226 KHI TẢI THÀNH CÔNG THỰC SỰ
+            std::string finalReply;
+            if (receive_reply(sock, recv_buffer, finalReply)) {
+                std::cout << finalReply;
+            }
+        } else {
+            std::cout << "\nDownload aborted or failed at UDP layer." << std::endl;
+            // KHI BỊ ABORT (!ok): RẢNH TAY THOÁT NGAY! 
+            // Không gọi receive_reply() ở đây để tránh tranh chấp với luồng chính ở Bước 4.
         }
 
-        // Dọn dẹp tài nguyên động
+        // Dọn dẹp tài nguyên
         dataChannel->close();
         delete dataChannel;
-        g_active_channel.store(nullptr); // Reset cờ
+        g_active_channel.store(nullptr); // Đánh báo cho Bước 3 của luồng chính biết là đã dọn xong
 
-        // Đọc phản hồi cuối từ server (ví dụ 226 Transfer Complete)
-        std::string finalReply;
-        if (receive_reply(sock, recv_buffer, finalReply)) {
-            std::cout << finalReply << std::endl;
-        }
-
-        // Nếu nhận file thất bại do gõ ABOR, server có thể trả về cả mã 426 và 226, 
-        // gọi receive_reply thêm lần nữa để làm sạch buffer.
-        if (!ok) {
-            std::string aborReply;
-            if (receive_reply(sock, recv_buffer, aborReply)) {
-                std::cout << aborReply << std::endl;
-            }
-        }
-
-        // In lại dấu nhắc lệnh do bị đè chữ
         std::cout << "ftp> " << std::flush;
         
-    }).detach(); // Quan trọng: detach để luồng chạy tự do
+    }).detach();
 }
-
 void doList(SOCKET sock, std::string& recv_buffer, const std::string& remoteDir, std::string cmdVerb = "LIST") {
     std::string pasvReply = sendCommandAndGetReply(sock, recv_buffer, "PASV");
     std::string serverIp;
@@ -791,9 +774,6 @@ int main(int argc, char *argv[])
         std::cout << greeting << std::endl;
     }
 
-    if (!fs::exists(CLIENT_ROOT))
-    {
-        fs::create_directories(CLIENT_ROOT);
 
         std::string input;
         while (true)
@@ -817,18 +797,17 @@ int main(int argc, char *argv[])
             continue;
         }
 
-        if (upperVerb == "ABOR") {
+       if (upperVerb == "ABOR") {
             DataChannel* ch = g_active_channel.load();
             if (ch != nullptr) {
-                // Bước 1: Gửi ABOR lên server trước
+                // Bước 1: Gửi ABOR lên server
                 std::string to_send = "ABOR\r\n";
                 send(sock, to_send.c_str(), to_send.length(), 0);
 
-                // Bước 2: Set cờ hủy trên DataChannel → GBN sender / receiver thoát
+                // Bước 2: Set cờ hủy trên DataChannel
                 ch->abortTransfer();
 
                 // Bước 3: Đợi transfer thread kết thúc (tối đa 3 giây)
-                // Transfer thread sẽ set g_active_channel = nullptr khi xong
                 log_info("Waiting for transfer thread to finish...");
                 for (int i = 0; i < 60 && g_active_channel.load() != nullptr; i++)
                     std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -837,13 +816,12 @@ int main(int argc, char *argv[])
                     log_error("Transfer thread did not finish in time.");
                 }
 
-                // Bước 4: Đọc reply server (426 abort + 226 success)
-                // Transfer thread có thể đã đọc 226 rồi — nếu không đọc được thì bỏ qua
+                // Bước 4: Luồng chính ĐỌC CHẮC CHẮN 2 REPLY (426 và 226)
+                // Do transfer thread khi !ok ĐÃ KHÔNG ĐỌC reply nữa, 
+                // 2 reply này chắc chắn 100% nằm trong buffer chờ luồng chính đọc.
                 std::string reply1, reply2;
-                receive_reply(sock, recv_buffer, reply1);
-                if (!reply1.empty()) std::cout << reply1;
-                receive_reply(sock, recv_buffer, reply2);
-                if (!reply2.empty()) std::cout << reply2;
+                if (receive_reply(sock, recv_buffer, reply1)) std::cout << reply1;
+                if (receive_reply(sock, recv_buffer, reply2)) std::cout << reply2;
 
                 log_info("ABOR complete.");
             } else {
@@ -859,7 +837,7 @@ int main(int argc, char *argv[])
                 std::cout << "Usage: put <local_file> [remote_name]" << std::endl;
                 continue;
             }
-
+        }
             if (upperVerb == "LS")
             {
                 std::string dir;
@@ -987,9 +965,7 @@ int main(int argc, char *argv[])
             if (upperVerb == "QUIT")
                 break;
         }
-    }
     closesocket(sock);
     cleanup_sockets();
     return 0;
-}
 }

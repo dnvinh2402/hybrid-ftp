@@ -5,6 +5,7 @@
 #include "data_channel_config.h"
 #include "transfer_session.h"
 #include "../common/protocol.h"
+#include "sliding_window_sender.h" 
 class UDPSocket;
 class RDTSender;
 class RDTReceiver;
@@ -49,6 +50,9 @@ public:
     // OS hoàn toàn riêng biệt -- phục vụ mục đích giám sát/isolation,
     // không ảnh hưởng logic gửi/nhận.
     int getSocketFd() const;
+
+    void abortTransfer();
+
 private:
     UDPSocket *socket;
 
@@ -66,6 +70,7 @@ private:
     bool opened;
     DataChannelConfig config;
     bool busy = false;
+     SlidingWindowSender* windowSender = nullptr;
 };
 
 #endif
