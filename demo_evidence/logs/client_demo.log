@@ -1,0 +1,196 @@
+[2026-08-19 22:39:30] [INFO] Connecting to 127.0.0.1:2121...
+[2026-08-19 22:39:30] [INFO] Connected!
+[2026-08-19 22:39:54] [INFO] UDP socket created successfully.
+[2026-08-19 22:39:54] [INFO] UDP socket bound to port 0
+[2026-08-19 22:39:54] [INFO] ================================
+[2026-08-19 22:39:54] [INFO] Open DataChannel
+[2026-08-19 22:39:54] [INFO] Local Port : 0
+[2026-08-19 22:39:54] [INFO] Timeout    : 5000 ms
+[2026-08-19 22:39:54] [INFO] Mode       : Go-Back-N (W=16)
+[2026-08-19 22:39:54] [INFO] ================================
+[2026-08-19 22:39:54] [INFO] Uploading (PASV) client_files/picture.png ...
+[2026-08-19 22:39:54] [INFO] ================================
+[2026-08-19 22:39:54] [INFO] Transfer Start (Go-Back-N (W=16))
+[2026-08-19 22:39:54] [INFO] File   : client_files/picture.png
+[2026-08-19 22:39:54] [INFO] Size   : 22181 bytes
+[2026-08-19 22:39:54] [INFO] Remote : 127.0.0.1:50629
+[2026-08-19 22:39:54] [INFO] ================================
+[2026-08-19 22:39:54] [INFO] [GBN] Flushing 1 packets in window...
+[2026-08-19 22:39:54] [INFO] [GBN] Flush complete. All packets ACKed.
+[2026-08-19 22:39:54] [INFO] Metadata sent. Name=picture.png Size=22181
+[2026-08-19 22:39:54] [INFO] [GBN] Flushing 1 packets in window...
+[2026-08-19 22:39:54] [INFO] [GBN] Flush complete. All packets ACKed.
+[2026-08-19 22:39:54] [INFO] FIN sent and ACKed.
+[2026-08-19 22:39:54] [INFO] ================================
+[2026-08-19 22:39:54] [INFO] Transfer Summary
+[2026-08-19 22:39:54] [INFO] File     : client_files/picture.png
+[2026-08-19 22:39:54] [INFO] Packets  : 16
+[2026-08-19 22:39:54] [INFO] Bytes    : 22181
+[2026-08-19 22:39:54] [INFO] Size     : 22181
+[2026-08-19 22:39:54] [INFO] Time     : 0.01 s
+[2026-08-19 22:39:54] [INFO] Speed    : 2.22 MB/s
+[2026-08-19 22:39:54] [INFO] Mode     : Go-Back-N (W=16)
+[2026-08-19 22:39:54] [INFO] Finished : Yes
+[2026-08-19 22:39:54] [INFO] ================================
+[2026-08-19 22:39:54] [INFO] Closing DataChannel.
+[2026-08-19 22:39:54] [INFO] UDP socket closed.
+[2026-08-19 22:42:27] [INFO] UDP socket created successfully.
+[2026-08-19 22:42:27] [INFO] UDP socket bound to port 0
+[2026-08-19 22:42:27] [INFO] ================================
+[2026-08-19 22:42:27] [INFO] Open DataChannel
+[2026-08-19 22:42:27] [INFO] Local Port : 0
+[2026-08-19 22:42:27] [INFO] Timeout    : 3000 ms
+[2026-08-19 22:42:27] [INFO] Mode       : Go-Back-N (W=16)
+[2026-08-19 22:42:27] [INFO] ================================
+[2026-08-19 22:42:27] [INFO] Downloading (PASV) demo-picture.png ...
+[2026-08-19 22:42:27] [INFO] Connected sender : 127.0.0.1:50700
+[2026-08-19 22:42:27] [INFO] File name        : demo-picture.png
+[2026-08-19 22:42:27] [INFO] File size        : 22181
+[2026-08-19 22:42:27] [INFO] ================================
+[2026-08-19 22:42:27] [INFO] Receive Start
+[2026-08-19 22:42:27] [INFO] File : demo-picture.png
+[2026-08-19 22:42:27] [INFO] Size : 22181
+[2026-08-19 22:42:27] [INFO] ================================
+[2026-08-19 22:42:27] [INFO] Metadata received.
+[2026-08-19 22:42:27] [INFO] FIN received. Transfer finished.
+[2026-08-19 22:42:27] [INFO] Receive complete.
+[2026-08-19 22:42:27] [INFO] File verified OK.
+[2026-08-19 22:42:27] [INFO] ================================
+[2026-08-19 22:42:27] [INFO] Receive Summary
+[2026-08-19 22:42:27] [INFO] File         : demo-picture.png
+[2026-08-19 22:42:27] [INFO] Sender       : 127.0.0.1:50700
+[2026-08-19 22:42:27] [INFO] Packets      : 16
+[2026-08-19 22:42:27] [INFO] Bytes        : 22181
+[2026-08-19 22:42:27] [INFO] Expected Seq : 17
+[2026-08-19 22:42:27] [INFO] File Size    : 22181
+[2026-08-19 22:42:27] [INFO] Finished     : Yes
+[2026-08-19 22:42:27] [INFO] ================================
+[2026-08-19 22:42:27] [INFO] Closing DataChannel.
+[2026-08-19 22:42:27] [INFO] UDP socket closed.
+[2026-08-19 22:44:03] [INFO] UDP socket created successfully.
+[2026-08-19 22:44:03] [INFO] UDP socket bound to port 40634
+[2026-08-19 22:44:03] [INFO] ================================
+[2026-08-19 22:44:03] [INFO] Open DataChannel
+[2026-08-19 22:44:03] [INFO] Local Port : 40634
+[2026-08-19 22:44:03] [INFO] Timeout    : 3000 ms
+[2026-08-19 22:44:03] [INFO] Mode       : Go-Back-N (W=16)
+[2026-08-19 22:44:03] [INFO] ================================
+[2026-08-19 22:44:03] [INFO] Downloading demo-picture.png ...
+[2026-08-19 22:44:03] [INFO] Connected sender : 127.0.0.1:54783
+[2026-08-19 22:44:03] [INFO] File name        : demo-picture.png
+[2026-08-19 22:44:03] [INFO] File size        : 22181
+[2026-08-19 22:44:03] [INFO] ================================
+[2026-08-19 22:44:03] [INFO] Receive Start
+[2026-08-19 22:44:03] [INFO] File : demo-picture.png
+[2026-08-19 22:44:03] [INFO] Size : 22181
+[2026-08-19 22:44:03] [INFO] ================================
+[2026-08-19 22:44:03] [INFO] Metadata received.
+[2026-08-19 22:44:03] [INFO] FIN received. Transfer finished.
+[2026-08-19 22:44:03] [INFO] Receive complete.
+[2026-08-19 22:44:03] [INFO] File verified OK.
+[2026-08-19 22:44:03] [INFO] ================================
+[2026-08-19 22:44:03] [INFO] Receive Summary
+[2026-08-19 22:44:03] [INFO] File         : demo-picture.png
+[2026-08-19 22:44:03] [INFO] Sender       : 127.0.0.1:54783
+[2026-08-19 22:44:03] [INFO] Packets      : 16
+[2026-08-19 22:44:03] [INFO] Bytes        : 22181
+[2026-08-19 22:44:03] [INFO] Expected Seq : 17
+[2026-08-19 22:44:03] [INFO] File Size    : 22181
+[2026-08-19 22:44:03] [INFO] Finished     : Yes
+[2026-08-19 22:44:03] [INFO] ================================
+[2026-08-19 22:44:03] [INFO] Closing DataChannel.
+[2026-08-19 22:44:03] [INFO] UDP socket closed.
+[2026-08-19 22:46:04] [INFO] Connecting to 127.0.0.1:2121...
+[2026-08-19 22:46:04] [INFO] Connected!
+[2026-08-19 22:46:30] [INFO] UDP socket created successfully.
+[2026-08-19 22:46:30] [INFO] UDP socket bound to port 0
+[2026-08-19 22:46:30] [INFO] ================================
+[2026-08-19 22:46:30] [INFO] Open DataChannel
+[2026-08-19 22:46:30] [INFO] Local Port : 0
+[2026-08-19 22:46:30] [INFO] Timeout    : 5000 ms
+[2026-08-19 22:46:30] [INFO] Mode       : Go-Back-N (W=16)
+[2026-08-19 22:46:30] [INFO] ================================
+[2026-08-19 22:46:30] [INFO] Uploading (PASV) client_files/book.pdf ...
+[2026-08-19 22:46:30] [INFO] ================================
+[2026-08-19 22:46:30] [INFO] Transfer Start (Go-Back-N (W=16))
+[2026-08-19 22:46:30] [INFO] File   : client_files/book.pdf
+[2026-08-19 22:46:30] [INFO] Size   : 22254526 bytes
+[2026-08-19 22:46:30] [INFO] Remote : 127.0.0.1:50157
+[2026-08-19 22:46:30] [INFO] ================================
+[2026-08-19 22:46:30] [INFO] [GBN] Flushing 1 packets in window...
+[2026-08-19 22:46:30] [INFO] [GBN] Flush complete. All packets ACKed.
+[2026-08-19 22:46:30] [INFO] Metadata sent. Name=book.pdf Size=22254526
+[2026-08-19 22:46:32] [INFO] [GBN] Flushing 10 packets in window...
+[2026-08-19 22:46:32] [INFO] [GBN] Flush complete. All packets ACKed.
+[2026-08-19 22:46:32] [INFO] FIN sent and ACKed.
+[2026-08-19 22:46:32] [INFO] ================================
+[2026-08-19 22:46:32] [INFO] Transfer Summary
+[2026-08-19 22:46:32] [INFO] File     : client_files/book.pdf
+[2026-08-19 22:46:32] [INFO] Packets  : 15897
+[2026-08-19 22:46:32] [INFO] Bytes    : 22254526
+[2026-08-19 22:46:32] [INFO] Size     : 22254526
+[2026-08-19 22:46:32] [INFO] Time     : 1.92 s
+[2026-08-19 22:46:32] [INFO] Speed    : 11.06 MB/s
+[2026-08-19 22:46:32] [INFO] Mode     : Go-Back-N (W=16)
+[2026-08-19 22:46:32] [INFO] Finished : Yes
+[2026-08-19 22:46:32] [INFO] ================================
+[2026-08-19 22:46:34] [INFO] Closing DataChannel.
+[2026-08-19 22:46:34] [INFO] UDP socket closed.
+[2026-08-19 22:49:21] [INFO] UDP socket created successfully.
+[2026-08-19 22:49:21] [INFO] UDP socket bound to port 0
+[2026-08-19 22:49:21] [INFO] ================================
+[2026-08-19 22:49:21] [INFO] Open DataChannel
+[2026-08-19 22:49:21] [INFO] Local Port : 0
+[2026-08-19 22:49:21] [INFO] Timeout    : 5000 ms
+[2026-08-19 22:49:21] [INFO] Mode       : Go-Back-N (W=16)
+[2026-08-19 22:49:21] [INFO] ================================
+[2026-08-19 22:49:21] [INFO] Uploading (PASV) client_files/abort-demo.bin ...
+[2026-08-19 22:49:21] [INFO] ================================
+[2026-08-19 22:49:21] [INFO] Transfer Start (Go-Back-N (W=16))
+[2026-08-19 22:49:21] [INFO] File   : client_files/abort-demo.bin
+[2026-08-19 22:49:21] [INFO] Size   : 104857600 bytes
+[2026-08-19 22:49:21] [INFO] Remote : 127.0.0.1:50066
+[2026-08-19 22:49:21] [INFO] ================================
+[2026-08-19 22:49:21] [INFO] [GBN] Flushing 1 packets in window...
+[2026-08-19 22:49:21] [INFO] [GBN] Flush complete. All packets ACKed.
+[2026-08-19 22:49:21] [INFO] Metadata sent. Name=abort-demo.bin Size=104857600
+[2026-08-19 22:49:30] [INFO] [GBN] Flushing 4 packets in window...
+[2026-08-19 22:49:30] [INFO] [GBN] Flush complete. All packets ACKed.
+[2026-08-19 22:49:30] [INFO] FIN sent and ACKed.
+[2026-08-19 22:49:30] [INFO] ================================
+[2026-08-19 22:49:30] [INFO] Transfer Summary
+[2026-08-19 22:49:30] [INFO] File     : client_files/abort-demo.bin
+[2026-08-19 22:49:30] [INFO] Packets  : 74899
+[2026-08-19 22:49:30] [INFO] Bytes    : 104857600
+[2026-08-19 22:49:30] [INFO] Size     : 104857600
+[2026-08-19 22:49:30] [INFO] Time     : 8.72 s
+[2026-08-19 22:49:30] [INFO] Speed    : 11.46 MB/s
+[2026-08-19 22:49:30] [INFO] Mode     : Go-Back-N (W=16)
+[2026-08-19 22:49:30] [INFO] Finished : Yes
+[2026-08-19 22:49:30] [INFO] ================================
+[2026-08-19 22:49:40] [INFO] Closing DataChannel.
+[2026-08-19 22:49:40] [INFO] UDP socket closed.
+[2026-08-19 22:50:34] [INFO] UDP socket created successfully.
+[2026-08-19 22:50:34] [INFO] UDP socket bound to port 0
+[2026-08-19 22:50:34] [INFO] ================================
+[2026-08-19 22:50:34] [INFO] Open DataChannel
+[2026-08-19 22:50:34] [INFO] Local Port : 0
+[2026-08-19 22:50:34] [INFO] Timeout    : 5000 ms
+[2026-08-19 22:50:34] [INFO] Mode       : Go-Back-N (W=16)
+[2026-08-19 22:50:34] [INFO] ================================
+[2026-08-19 22:50:34] [INFO] Uploading (PASV) client_files/abort-demo.bin ...
+[2026-08-19 22:50:34] [INFO] ================================
+[2026-08-19 22:50:34] [INFO] Transfer Start (Go-Back-N (W=16))
+[2026-08-19 22:50:34] [INFO] File   : client_files/abort-demo.bin
+[2026-08-19 22:50:34] [INFO] Size   : 104857600 bytes
+[2026-08-19 22:50:34] [INFO] Remote : 127.0.0.1:50684
+[2026-08-19 22:50:34] [INFO] ================================
+[2026-08-19 22:50:34] [INFO] [GBN] Flushing 1 packets in window...
+[2026-08-19 22:50:34] [INFO] [GBN] Flush complete. All packets ACKed.
+[2026-08-19 22:50:34] [INFO] Metadata sent. Name=abort-demo.bin Size=104857600
+[2026-08-19 22:50:38] [INFO] DataChannel: abort requested.
+[2026-08-19 22:50:38] [INFO] Waiting for transfer thread to finish...
+[2026-08-19 22:50:39] [INFO] FileSender: aborted by ABOR command.
+[2026-08-19 22:50:39] [INFO] Closing DataChannel.
+[2026-08-19 22:50:39] [INFO] UDP socket closed.
+[2026-08-19 22:50:39] [INFO] ABOR complete.
