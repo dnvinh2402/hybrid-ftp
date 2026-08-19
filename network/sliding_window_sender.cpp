@@ -164,6 +164,19 @@ bool SlidingWindowSender::retransmitWindow()
 // ------------------------------------------------------------
 bool SlidingWindowSender::send(const RDTPacket &packet)
 {
+    // FIX: kiểm tra abort NGAY TỪ ĐẦU, không chỉ trong lúc chờ cửa sổ đầy.
+    // Nếu thiếu check này, khi cửa sổ chưa đầy (file nhỏ / mạng nhanh),
+    // hàm sẽ bỏ qua hoàn toàn việc kiểm tra abort và tiếp tục gửi hết các
+    // gói còn lại ra socket dù ABOR đã được gọi -- các gói "rác" đó nằm
+    // lại trong buffer và bị phiên truyền file KẾ TIẾP đọc nhầm, gây ra
+    // hàng loạt log "[GBN] Out-of-order" và khiến ABOR có cảm giác như
+    // không còn tác dụng ở lần truyền sau.
+    if (aborted.load())
+    {
+        log_info("[GBN] Sender aborted, refusing to send further packets.");
+        return false;
+    }
+
     // Đợi cho đến khi cửa sổ có chỗ trống
     while (windowFull())
     {

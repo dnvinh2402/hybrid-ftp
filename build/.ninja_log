@@ -75,3 +75,15 @@
 75	3020	8088256759161508	CMakeFiles/ftp_client.dir/network/data_channel.cpp.obj	1c0fbc17338d9cdb
 3021	3321	8088256788613576	bin/ftp_client.exe	33429b99b4430251
 3005	3362	8088256788448531	bin/ftp_server.exe	d3f21766c3947c89
+97	901	8088273565620589	bin/ftp_client.exe	33429b99b4430251
+86	930	8088273565514112	bin/ftp_server.exe	d3f21766c3947c89
+8	1876	8088285007518430	CMakeFiles/ftp_server.dir/network/file_receiver.cpp.obj	1ef329da061fa54b
+20	1878	8088285007638338	CMakeFiles/ftp_client.dir/network/file_receiver.cpp.obj	a184aa05a8b0c278
+26	2404	8088285007704713	CMakeFiles/ftp_client.dir/network/sliding_window_sender.cpp.obj	553edfc46673cb7e
+14	2447	8088285007518430	CMakeFiles/ftp_server.dir/network/sliding_window_sender.cpp.obj	5c0bcd947996a5e9
+2405	2650	8088285031474814	bin/ftp_client.exe	33429b99b4430251
+2447	2687	8088285031897065	bin/ftp_server.exe	d3f21766c3947c89
+6	869	8088290321252432	CMakeFiles/protocol_tests.dir/tests/protocol_tests.cpp.obj	fb3331f2a6662969
+869	1074	8088290329886935	protocol_tests.exe	fde470c8d208bffd
+6	2257	8088291631962570	CMakeFiles/ftp_client.dir/client/main_client.cpp.obj	3aa0afe727bd69a4
+2257	2476	8088291654458025	bin/ftp_client.exe	33429b99b4430251

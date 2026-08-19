@@ -826,7 +826,8 @@ int main(int argc, char *argv[])
             }
 
             std::string reply = sendCommandAndGetReply(sock, recv_buffer, "TYPE " + upperArg);
-            std::cout << reply;
+            // std::cout << reply;
+            //sieuuuu
 
             if (reply.rfind("200", 0) == 0)
             {

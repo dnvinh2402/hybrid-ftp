@@ -138,9 +138,9 @@ bool FileReceiver::receiveFile(const std::string& outputDir)
             {
                 // GBN: FIN out-of-order → discard + cumulative ACK
                 //tatlog
-                log_info("[GBN] FIN out-of-order seq=" +
-                         std::to_string(packet.header.seq_num) +
-                         " expected=" + std::to_string(session.expectedSeq));
+                // log_info("[GBN] FIN out-of-order seq=" +
+                //          std::to_string(packet.header.seq_num) +
+                //          " expected=" + std::to_string(session.expectedSeq));
                 if (session.expectedSeq > 0)
                     rdtReceiver.sendAck(session.expectedSeq - 1, ip, port);
                 continue;
@@ -174,9 +174,9 @@ bool FileReceiver::receiveFile(const std::string& outputDir)
         // của packet cuối đã nhận đúng thứ tự để trigger GBN retransmit.
         if (packet.header.seq_num > session.expectedSeq)
         {
-            log_info("[GBN] Out-of-order seq=" + std::to_string(packet.header.seq_num) +
-                     " expected=" + std::to_string(session.expectedSeq) +
-                     ". Discarding, resending cumulative ACK.");
+            // log_info("[GBN] Out-of-order seq=" + std::to_string(packet.header.seq_num) +
+            //          " expected=" + std::to_string(session.expectedSeq) +
+            //          ". Discarding, resending cumulative ACK.");
             if (session.expectedSeq > 0)
                 rdtReceiver.sendAck(session.expectedSeq - 1, ip, port);
             // expectedSeq = 0 → chưa nhận gói nào sau META → không gửi ACK
