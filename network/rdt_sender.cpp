@@ -2,8 +2,9 @@
 #include "udp_socket.h"
 #include "../common/rdt_packet.h"
 #include "../common/logger.h"
-RDTSender::RDTSender(UDPSocket &socket)
-    : udp(socket)
+RDTSender::RDTSender(UDPSocket &socket, int maxRetry)
+    : udp(socket),
+      maxRetry(maxRetry > 0 ? maxRetry : 1)
 {
 }
 
@@ -13,11 +14,11 @@ bool RDTSender::send(const RDTPacket &packet,
 {
     const uint32_t seq = packet.header.seq_num;
 
-    for (int retry = 1; retry <= MAX_RETRY; retry++)
+    for (int retry = 1; retry <= maxRetry; retry++)
     {
         log_info("Send seq=" + std::to_string(seq) +
                  " attempt=" + std::to_string(retry) +
-                 "/" + std::to_string(MAX_RETRY));
+                 "/" + std::to_string(maxRetry));
 
         if (!udp.sendPacket(packet, ip, port))
         {
@@ -31,7 +32,7 @@ bool RDTSender::send(const RDTPacket &packet,
             return true;
         }
 
-        if (retry < MAX_RETRY)
+        if (retry < maxRetry)
             log_info("Timeout/bad ACK for seq=" + std::to_string(seq) +
                      ". Retransmitting...");
     }

@@ -105,7 +105,15 @@ bool UDPSocket::receivePacket(RDTPacket& packet,
 
     if (received == SOCKET_ERROR)
     {
-        log_error("Failed to receive UDP packet.");
+        const int errorCode = SocketPlatform::lastError();
+
+        if (!SocketPlatform::isTimeoutError(errorCode))
+        {
+            log_error(
+                "Failed to receive UDP packet. OS error="
+                + std::to_string(errorCode));
+        }
+
         return false;
     }
 
@@ -127,10 +135,6 @@ bool UDPSocket::receivePacket(RDTPacket& packet,
     senderIp = ipBuffer;
     senderPort = ntohs(senderAddr.sin_port);
 
-    //tatlog
-    // log_debug("Received UDP packet from "
-    //           + senderIp + ":" + std::to_string(senderPort));
-
     return true;
 }
 bool UDPSocket::sendPacket(const RDTPacket& packet,
@@ -148,13 +152,10 @@ bool UDPSocket::sendPacket(const RDTPacket& packet,
 
     if (inet_pton(AF_INET, cleanIp.c_str(), &address.sin_addr) <= 0)
     {
-        log_error("Eror format IP: '" + cleanIp + "'. inet_pton fail.");
+        log_error("Invalid IPv4 address: '" + cleanIp + "'.");
         return false;
     }
 
-    inet_pton(AF_INET,
-              ip.c_str(),
-              &address.sin_addr);
 
     std::array<uint8_t,
                RDT_HEADER_SIZE + MAX_PAYLOAD_SIZE> buffer;
@@ -172,22 +173,13 @@ bool UDPSocket::sendPacket(const RDTPacket& packet,
                reinterpret_cast<sockaddr*>(&address),
                sizeof(address));
 
-    // if(sent == SOCKET_ERROR)
-    // {
-    //     log_error("Failed to send UDP packet.");
-    //     return false;
-    // }
     if(sent == SOCKET_ERROR)
     {
-        // THÊM 2 DÒNG NÀY ĐỂ BẮT MÃ LỖI CHÍNH XÁC CỦA WINDOWS
-        int errCode = SocketPlatform::getLastError();
-        log_error("Failed to send UDP packet. WSA Error Code: " + std::to_string(errCode));
+        int errCode = SocketPlatform::lastError();
+        log_error("Failed to send UDP packet. OS error=" + std::to_string(errCode));
         
         return false;
     }
-
-    //tatlog
-    // log_debug("UDP packet sent.");
 
     return true;
 }

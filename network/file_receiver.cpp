@@ -120,6 +120,26 @@ bool FileReceiver::receiveFile(
                 ip,
                 port))
         {
+            if (aborted.load())
+            {
+                log_info("FileReceiver: aborted while waiting for UDP data.");
+
+                if (file.is_open())
+                {
+                    file.close();
+                }
+
+                if (metadataReceived)
+                {
+                    std::error_code errorCode;
+                    std::filesystem::remove(
+                        std::filesystem::path(outputDir) / session.fileName,
+                        errorCode);
+                }
+
+                return false;
+            }
+
             consecutiveTimeouts++;
 
             log_error(

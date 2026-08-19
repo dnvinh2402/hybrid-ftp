@@ -165,3 +165,30 @@ add_test(
     NAME socket_compat_tests
     COMMAND socket_compat_tests
 )
+add_executable(
+    rdt_integration_tests
+    tests/rdt_integration_tests.cpp
+    common/sha256.cpp
+    ${NETWORK_SOURCES}
+    ${NETWORK_HEADERS}
+    ${COMMON_HEADERS}
+)
+
+target_include_directories(
+    rdt_integration_tests
+    PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+if(WIN32)
+    target_link_libraries(
+        rdt_integration_tests
+        PRIVATE
+        ws2_32
+    )
+endif()
+
+add_test(
+    NAME rdt_integration_tests
+    COMMAND rdt_integration_tests
+)

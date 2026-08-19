@@ -1,7 +1,22 @@
+# Build output
 build/
+build_*/
+cmake-build-*/
+
+# Platform/editor metadata
+.DS_Store
+__MACOSX/
+.vscode/*.log
+
+# Compiled binaries/packages
 *.exe
-ftp_root/
 *.deb
+
+# Runtime/generated transfer data
 *.tmp_ascii
+server_files/
 client_files/*.deb
-build/
+
+# The server root is runtime data. The repository may still keep tracked
+# sample files already committed under ftp_root/.
+ftp_root/

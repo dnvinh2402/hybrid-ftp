@@ -1,3 +1,6 @@
+#include <cstdlib>
+#include <cstdio>
+#include <cctype>
 #include <iostream>
 #include <cstring>
 #include <string>
@@ -9,11 +12,8 @@
 #include <vector>
 #include <sstream>
 #include <fstream>
-<<<<<<< Updated upstream
 #include <atomic>
-=======
-
->>>>>>> Stashed changes
+#include <mutex>
 #include "../common/logger.h"
 #include "../common/protocol.h"
 #include "../common/sha256.h"
@@ -46,13 +46,83 @@ enum class Mode
     PASSIVE
 };
 Mode currentMode = Mode::NONE;
-std::atomic<bool> is_transferring(false);
 TransferType currentType = TransferType::ASCII;
 
 std::string pasvIp;
 int pasvPort = 0;
-int activePort = 0;
-std::atomic<DataChannel *> g_active_channel{nullptr};
+std::mutex g_control_mutex;
+std::mutex g_active_channel_mutex;
+DataChannel *g_active_channel = nullptr;
+std::atomic<bool> g_abort_in_progress{false};
+
+bool sendAll(SOCKET sock, const std::string &data)
+{
+    std::size_t totalSent = 0;
+
+    while (totalSent < data.size())
+    {
+        const int sent = send(
+            sock,
+            data.data() + totalSent,
+            static_cast<int>(data.size() - totalSent),
+            0);
+
+        if (sent == SOCKET_ERROR || sent <= 0)
+        {
+            return false;
+        }
+
+        totalSent += static_cast<std::size_t>(sent);
+    }
+
+    return true;
+}
+
+void setActiveChannel(DataChannel *channel)
+{
+    std::lock_guard<std::mutex> lock(g_active_channel_mutex);
+    g_active_channel = channel;
+}
+
+DataChannel *getActiveChannel()
+{
+    std::lock_guard<std::mutex> lock(g_active_channel_mutex);
+    return g_active_channel;
+}
+
+bool hasActiveChannel()
+{
+    return getActiveChannel() != nullptr;
+}
+
+fs::path makeClientTransferDirectory()
+{
+    static std::atomic<unsigned long long> counter{0};
+    static std::random_device randomDevice;
+
+    const auto now =
+        std::chrono::steady_clock::now().time_since_epoch().count();
+
+    const fs::path dir =
+        fs::temp_directory_path()
+        / ("hybridftp_client_"
+           + std::to_string(now)
+           + "_"
+           + std::to_string(randomDevice())
+           + "_"
+           + std::to_string(counter.fetch_add(1)));
+
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    return dir;
+}
+
+void cleanupClientTransferDirectory(const fs::path &dir)
+{
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+}
+
 
 // receive_reply(): đọc ĐÚNG 1 dòng reply hoàn chỉnh từ server, dùng buffer
 // tích lũy sống suốt phiên (truyền theo tham chiếu).
@@ -106,14 +176,40 @@ bool receive_reply(SOCKET sock, std::string &recv_buffer, std::string &reply)
     }
 }
 
+
+bool receiveReplyThreadSafe(
+    SOCKET sock,
+    std::string &recv_buffer,
+    std::string &reply)
+{
+    std::lock_guard<std::mutex> lock(g_control_mutex);
+    return receive_reply(sock, recv_buffer, reply);
+}
+
 // Gửi 1 lệnh FTP qua TCP rồi chờ đúng 1 dòng reply, in ra và trả về cho
 // nơi gọi tự kiểm tra mã trạng thái nếu cần.
-std::string sendCommandAndGetReply(SOCKET sock, std::string &recv_buffer, const std::string &command)
+std::string sendCommandAndGetReply(
+    SOCKET sock,
+    std::string &recv_buffer,
+    const std::string &command)
 {
-    std::string to_send = command + "\r\n";
-    send(sock, to_send.c_str(), to_send.length(), 0);
+    std::lock_guard<std::mutex> lock(g_control_mutex);
+
+    const std::string toSend = command + "\r\n";
+
+    if (!sendAll(sock, toSend))
+    {
+        log_error("Failed to send FTP command: " + command);
+        return "";
+    }
+
     std::string reply;
-    receive_reply(sock, recv_buffer, reply);
+    if (!receive_reply(sock, recv_buffer, reply))
+    {
+        log_error("Failed to receive FTP reply for: " + command);
+        return "";
+    }
+
     std::cout << reply;
     return reply;
 }
@@ -145,12 +241,7 @@ void verifyEndToEndIntegrity(SOCKET sock, std::string &recv_buffer, const std::s
 
     if (localDigest.empty())
     {
-<<<<<<< Updated upstream
         std::cout << "Cannot calculate local SHA-256 for: " << localFile << std::endl;
-=======
-        std::cout << "[CLIENT][ERROR] Cannot calculate local SHA-256: " << localFile << '\n';
-
->>>>>>> Stashed changes
         return;
     }
 
@@ -159,7 +250,6 @@ void verifyEndToEndIntegrity(SOCKET sock, std::string &recv_buffer, const std::s
 
     if (serverDigest.empty())
     {
-<<<<<<< Updated upstream
         std::cout << "Server did not return a valid SHA-256 digest." << std::endl;
         return;
     }
@@ -167,16 +257,6 @@ void verifyEndToEndIntegrity(SOCKET sock, std::string &recv_buffer, const std::s
     std::cout << "[INTEGRITY CHECK]" << std::endl;
     std::cout << "Local  SHA-256: " << localDigest << std::endl;
     std::cout << "Server SHA-256: " << serverDigest << std::endl;
-=======
-        std::cout << "[CLIENT][ERROR] Server returned an invalid SHA-256 digest.\n";
-
-        return;
-    }
-
-    std::cout << "\n========== INTEGRITY CHECK ==========\n"
-              << "Local SHA-256   : " << localDigest << '\n'
-              << "Remote SHA-256  : " << serverDigest << '\n';
->>>>>>> Stashed changes
 
     if (localDigest == serverDigest)
     {
@@ -256,114 +336,127 @@ bool convertCRLFToLFInFile(const fs::path &srcPath, const fs::path &dstPath)
 // doPut(): upload file lên server qua PASV. Chạy trên thread tách rời để
 // luồng chính vẫn có thể nhận lệnh ABOR trong lúc truyền.
 // ---------------------------------------------------------------------
-void doPut(SOCKET sock, std::string &recv_buffer, std::string &localPath, std::string remoteName, std::string cmdVerb = "STOR", TransferType type = TransferType::BINARY)
+void doPut(
+    SOCKET sock,
+    std::string &recv_buffer,
+    std::string &localPath,
+    std::string remoteName,
+    std::string cmdVerb = "STOR",
+    TransferType type = TransferType::BINARY)
 {
     if (!fs::exists(localPath) && fs::exists(CLIENT_ROOT / localPath))
     {
         localPath = (CLIENT_ROOT / localPath).string();
     }
+
     if (!fs::exists(localPath) || !fs::is_regular_file(localPath))
     {
         std::cout << "[CLIENT][ERROR] Local file not found: " << localPath << '\n';
         return;
     }
+
     if (remoteName.empty() && cmdVerb != "STOU")
     {
         remoteName = fs::path(localPath).filename().string();
-    }     
+    }
 
-    std::string pasvReply = sendCommandAndGetReply(sock, recv_buffer, "PASV");
+    const std::string pasvReply =
+        sendCommandAndGetReply(sock, recv_buffer, "PASV");
+
     std::string serverIp;
-    int serverPort;
-    if (pasvReply.rfind("227", 0) != 0 || !parsePasvResponse(pasvReply, serverIp, serverPort))
+    int serverPort = 0;
+
+    if (pasvReply.rfind("227", 0) != 0 ||
+        !parsePasvResponse(pasvReply, serverIp, serverPort))
     {
         std::cout << "[CLIENT][ERROR] PASV negotiation failed; upload cancelled.\n";
         return;
     }
 
     DataChannel *dataChannel = new DataChannel();
+
     DataChannelConfig cfg;
     cfg.localPort = 0;
-    cfg.timeout = 5000; // 5s -- bằng với timeout phía server để tránh lệch
+    cfg.timeout = 5000;
     cfg.maxRetry = 5;
     cfg.useGBN = true;
 
     if (!dataChannel->open(cfg))
     {
-<<<<<<< Updated upstream
-        std::cout << "Cannot open local UDP data channel." << std::endl;
+        std::cout << "[CLIENT][ERROR] Cannot open local UDP data channel.\n";
         delete dataChannel;
         return;
     }
 
-    // Gửi đúng câu lệnh STOR / STOU / APPE tùy theo yêu cầu
-    std::string storReply = sendCommandAndGetReply(sock, recv_buffer, cmdVerb + " " + remoteName);
-=======
-        std::cout << "[CLIENT][ERROR] Cannot open local UDP data channel.\n";
-        return;
-    }
-
+    // STOU has no remote pathname argument; the server generates a unique name.
     std::string uploadCommand = cmdVerb;
-
     if (cmdVerb != "STOU")
     {
         uploadCommand += " " + remoteName;
     }
 
-    // Gửi đúng câu lệnh STOR / STOU / APPE tùy thuộc vào yêu cầu
-    std::string storReply = sendCommandAndGetReply(sock, recv_buffer, uploadCommand);
->>>>>>> Stashed changes
-    if (storReply.rfind("150", 0) != 0)
+    const std::string preliminaryReply =
+        sendCommandAndGetReply(sock, recv_buffer, uploadCommand);
+
+    if (preliminaryReply.rfind("150", 0) != 0)
     {
         dataChannel->close();
         delete dataChannel;
         return;
     }
 
-    g_active_channel.store(dataChannel);
+    setActiveChannel(dataChannel);
 
-<<<<<<< Updated upstream
-    std::thread([sock, &recv_buffer, dataChannel, localPath, remoteName, serverIp, serverPort]()
+    std::thread(
+        [sock,
+         &recv_buffer,
+         dataChannel,
+         localPath,
+         remoteName,
+         serverIp,
+         serverPort,
+         cmdVerb,
+         type]()
+        {
+            log_info("Uploading (PASV) " + localPath + " ...");
+
+            const bool ok = dataChannel->sendFile(
+                localPath,
+                serverIp,
+                static_cast<unsigned short>(serverPort),
+                type);
+
+            if (ok && !g_abort_in_progress.load())
+            {
+                std::string finalReply;
+                if (receiveReplyThreadSafe(sock, recv_buffer, finalReply))
                 {
-                    log_info("Uploading (PASV) " + localPath + " -> " + remoteName + " ...");
-=======
-    if (!ok)
-    {
-        std::cout << "[CLIENT][ERROR] Upload failed at UDP data layer.\n";
-        return;
-    }
->>>>>>> Stashed changes
+                    std::cout << '\n' << finalReply;
+                }
 
-                    // FIX: đây là UPLOAD nên phải gọi sendFile(), không phải receiveFile().
-                    bool ok = dataChannel->sendFile(localPath, serverIp, static_cast<unsigned short>(serverPort));
+                if (finalReply.rfind("226", 0) == 0 &&
+                    cmdVerb == "STOR" &&
+                    !remoteName.empty())
+                {
+                    verifyEndToEndIntegrity(
+                        sock,
+                        recv_buffer,
+                        localPath,
+                        remoteName);
+                }
+            }
+            else if (!ok)
+            {
+                std::cout
+                    << "\n[CLIENT][ERROR] Upload aborted or failed at UDP data layer.\n";
+            }
 
-<<<<<<< Updated upstream
-                    if (ok)
-                    {
-                        std::string finalReply;
-                        if (receive_reply(sock, recv_buffer, finalReply))
-                        {
-                            std::cout << "\n" << finalReply;
-                        }
-                    }
-                    else
-                    {
-                        std::cout << "\nUpload aborted or failed at UDP layer." << std::endl;
-                        // KHI BỊ ABORT: không gọi receive_reply() ở đây để tránh tranh chấp
-                        // với luồng chính đang xử lý ABOR.
-                    }
-=======
-    if (receive_reply(sock, recv_buffer, finalReply))
-    {
-        std::cout << finalReply;
->>>>>>> Stashed changes
+            dataChannel->close();
+            setActiveChannel(nullptr);
+            delete dataChannel;
 
-                    dataChannel->close();
-                    delete dataChannel;
-                    g_active_channel.store(nullptr);
-
-                    std::cout << "ftp> " << std::flush;
-                })
+            std::cout << "ftp> " << std::flush;
+        })
         .detach();
 }
 
@@ -393,12 +486,8 @@ void doGet(SOCKET sock, std::string &recv_buffer, const std::string &remoteName,
 
     if (!dataChannel->open(cfg))
     {
-<<<<<<< Updated upstream
-        std::cout << "Cannot open local UDP port " << myPort << " for download." << std::endl;
-        delete dataChannel;
-=======
         std::cout << "[CLIENT][ERROR] Cannot bind local UDP port " << myPort << " for download.\n";
->>>>>>> Stashed changes
+        delete dataChannel;
         return;
     }
 
@@ -418,44 +507,20 @@ void doGet(SOCKET sock, std::string &recv_buffer, const std::string &remoteName,
         return;
     }
 
-    g_active_channel.store(dataChannel);
+    const fs::path tempDir = makeClientTransferDirectory();
+    setActiveChannel(dataChannel);
 
-<<<<<<< Updated upstream
-    std::thread([sock, &recv_buffer, dataChannel, remoteName, localPath, type]()
+    std::thread([sock, &recv_buffer, dataChannel, remoteName, localPath, type, tempDir]()
                 {
                     log_info("Downloading " + remoteName + " ...");
-=======
-    if (!ok)
-    {
-        dataChannel.close();
-        std::cout << "[CLIENT][ERROR] Download failed at UDP data layer; see RDT logs above.\n";
-        return;
-    }
->>>>>>> Stashed changes
 
-                    bool ok = dataChannel->receiveFile();
+                    bool ok = dataChannel->receiveFile(tempDir.string());
 
-<<<<<<< Updated upstream
                     if (ok)
                     {
                         const TransferSession &recvInfo = dataChannel->getReceiveTransferSession();
-                        fs::path receivedPath = fs::path("server_files") / recvInfo.fileName;
+                        fs::path receivedPath = tempDir / recvInfo.fileName;
                         std::error_code ec;
-=======
-    dataChannel.close();
-    std::error_code ec;
-    fs::rename(receivedPath, localPath, ec);
-    if (ec)
-    {
-        std::cout << "[CLIENT][WARN] Download completed, but the file could not be moved to: "
-                  << localPath << '\n'
-                  << "[CLIENT][INFO] Temporary file: " << receivedPath.string() << '\n';
-    }
-    else
-    {
-        std::cout << "[CLIENT][OK] Saved file: " << localPath << '\n';
-    }
->>>>>>> Stashed changes
 
                         if (type == TransferType::ASCII)
                         {
@@ -489,10 +554,10 @@ void doGet(SOCKET sock, std::string &recv_buffer, const std::string &remoteName,
                             }
                         }
 
-<<<<<<< Updated upstream
-                        // CHỈ ĐỌC MÃ 226 KHI TẢI THÀNH CÔNG THỰC SỰ
+                        // Read the final 226 only after the data transfer succeeds.
                         std::string finalReply;
-                        if (receive_reply(sock, recv_buffer, finalReply))
+                        if (!g_abort_in_progress.load() &&
+                            receiveReplyThreadSafe(sock, recv_buffer, finalReply))
                         {
                             std::cout << finalReply;
                             if (finalReply.rfind("226", 0) == 0 && fs::exists(localPath))
@@ -507,15 +572,11 @@ void doGet(SOCKET sock, std::string &recv_buffer, const std::string &remoteName,
                         // KHI BỊ ABORT: không gọi receive_reply() ở đây để tránh tranh chấp
                         // với luồng chính.
                     }
-=======
-    if (receive_reply(sock, recv_buffer, finalReply))
-    {
-        std::cout << finalReply;
->>>>>>> Stashed changes
 
+                    cleanupClientTransferDirectory(tempDir);
                     dataChannel->close();
+                    setActiveChannel(nullptr);
                     delete dataChannel;
-                    g_active_channel.store(nullptr);
 
                     std::cout << "ftp> " << std::flush;
                 })
@@ -557,24 +618,12 @@ void doGetViaPasv(SOCKET sock, std::string &recv_buffer, const std::string &remo
 
     if (!dataChannel->open(cfg))
     {
-<<<<<<< Updated upstream
-        std::cout << "Cannot open local UDP data channel." << std::endl;
+        std::cout << "[CLIENT][ERROR] Cannot open local UDP data channel.\n";
         delete dataChannel;
         return;
     }
 
     std::string retrReply = sendCommandAndGetReply(sock, recv_buffer, "RETR " + remoteName);
-=======
-        std::cout << "[CLIENT][ERROR] Cannot open local UDP data channel.\n";
-        return;
-    }
-
-    std::string to_send = "RETR " + remoteName + "\r\n";
-    send(sock, to_send.c_str(), to_send.length(), 0);
-    std::string retrReply;
-    receive_reply(sock, recv_buffer, retrReply);
-    std::cout << retrReply;
->>>>>>> Stashed changes
     if (retrReply.rfind("150", 0) != 0)
     {
         dataChannel->close();
@@ -586,41 +635,20 @@ void doGetViaPasv(SOCKET sock, std::string &recv_buffer, const std::string &remo
     // server đang chờ đúng gói này trong receiveHandshake().
     dataChannel->sendHandshake(serverIp, static_cast<unsigned short>(serverPort));
 
-    g_active_channel.store(dataChannel);
+    const fs::path tempDir = makeClientTransferDirectory();
+    setActiveChannel(dataChannel);
 
-<<<<<<< Updated upstream
-    std::thread([sock, &recv_buffer, dataChannel, remoteName, localPath, type]()
+    std::thread([sock, &recv_buffer, dataChannel, remoteName, localPath, type, tempDir]()
                 {
                     log_info("Downloading (PASV) " + remoteName + " ...");
-=======
-    if (!ok)
-    {
-        dataChannel.close();
-        std::cout << "[CLIENT][ERROR] Download failed at UDP data layer; see RDT logs above.\n";
-        return;
-    }
->>>>>>> Stashed changes
 
-                    bool ok = dataChannel->receiveFile();
+                    bool ok = dataChannel->receiveFile(tempDir.string());
 
-<<<<<<< Updated upstream
                     if (ok)
                     {
                         const TransferSession &recvInfo = dataChannel->getReceiveTransferSession();
-                        fs::path receivedPath = fs::path("server_files") / recvInfo.fileName;
+                        fs::path receivedPath = tempDir / recvInfo.fileName;
                         std::error_code ec;
-=======
-    std::error_code ec;
-    fs::rename(receivedPath, localPath, ec);
-    if (ec)
-    {
-        std::cout << "[CLIENT][WARN] Download completed, but the file could not be moved to: " << localPath << '\n';
-    }
-    else
-    {
-        std::cout << "[CLIENT][OK] Saved file: " << localPath << '\n';
-    }
->>>>>>> Stashed changes
 
                         if (type == TransferType::ASCII)
                         {
@@ -652,9 +680,9 @@ void doGetViaPasv(SOCKET sock, std::string &recv_buffer, const std::string &remo
                             }
                         }
 
-<<<<<<< Updated upstream
                         std::string finalReply;
-                        if (receive_reply(sock, recv_buffer, finalReply))
+                        if (!g_abort_in_progress.load() &&
+                            receiveReplyThreadSafe(sock, recv_buffer, finalReply))
                         {
                             std::cout << finalReply;
                             if (finalReply.rfind("226", 0) == 0 && fs::exists(localPath))
@@ -667,15 +695,11 @@ void doGetViaPasv(SOCKET sock, std::string &recv_buffer, const std::string &remo
                     {
                         std::cout << "\nDownload aborted or failed at UDP layer." << std::endl;
                     }
-=======
-    if (receive_reply(sock, recv_buffer, finalReply))
-    {
-        std::cout << finalReply;
->>>>>>> Stashed changes
 
+                    cleanupClientTransferDirectory(tempDir);
                     dataChannel->close();
+                    setActiveChannel(nullptr);
                     delete dataChannel;
-                    g_active_channel.store(nullptr);
 
                     std::cout << "ftp> " << std::flush;
                 })
@@ -710,11 +734,7 @@ void doList(SOCKET sock, std::string &recv_buffer, const std::string &remoteDir,
     }
 
     std::string listCmd = cmdVerb + (remoteDir.empty() ? "" : (" " + remoteDir));
-    std::string to_send = listCmd + "\r\n";
-    send(sock, to_send.c_str(), to_send.length(), 0);
-    std::string listReply;
-    receive_reply(sock, recv_buffer, listReply);
-    std::cout << listReply;
+    std::string listReply = sendCommandAndGetReply(sock, recv_buffer, listCmd);
     if (listReply.rfind("150", 0) != 0)
     {
         dataChannel.close();
@@ -723,16 +743,18 @@ void doList(SOCKET sock, std::string &recv_buffer, const std::string &remoteDir,
 
     dataChannel.sendHandshake(serverIp, static_cast<unsigned short>(serverPort));
 
-    bool ok = dataChannel.receiveFile();
+    const fs::path tempDir = makeClientTransferDirectory();
+    bool ok = dataChannel.receiveFile(tempDir.string());
     if (!ok)
     {
         dataChannel.close();
+        cleanupClientTransferDirectory(tempDir);
         std::cout << "[CLIENT][ERROR] " << cmdVerb << " failed at UDP data layer.\n";
         return;
     }
 
     const TransferSession &recvInfo = dataChannel.getReceiveTransferSession();
-    fs::path receivedPath = fs::path("server_files") / recvInfo.fileName;
+    fs::path receivedPath = tempDir / recvInfo.fileName;
     dataChannel.close();
 
     std::ifstream f(receivedPath);
@@ -742,9 +764,10 @@ void doList(SOCKET sock, std::string &recv_buffer, const std::string &remoteDir,
     f.close();
     std::error_code ec;
     fs::remove(receivedPath, ec);
+    cleanupClientTransferDirectory(tempDir);
 
     std::string finalReply;
-    if (receive_reply(sock, recv_buffer, finalReply))
+    if (receiveReplyThreadSafe(sock, recv_buffer, finalReply))
     {
         std::cout << finalReply;
     }
@@ -753,7 +776,12 @@ void doList(SOCKET sock, std::string &recv_buffer, const std::string &remoteDir,
 int main(int argc, char *argv[])
 {
     fs::create_directories("client_files");
-    init_sockets();
+
+    if (!init_sockets())
+    {
+        log_error("Failed to initialize socket platform.");
+        return 1;
+    }
 
     std::string server_ip;
     if (argc >= 2)
@@ -818,11 +846,13 @@ int main(int argc, char *argv[])
         std::string verb;
         iss >> verb;
         std::string upperVerb = verb;
-        for (auto &c : upperVerb)
-            c = toupper(c);
+        for (char &c : upperVerb)
+        {
+            c = static_cast<char>(
+                std::toupper(static_cast<unsigned char>(c)));
+        }
 
-<<<<<<< Updated upstream
-        if (g_active_channel != nullptr && upperVerb != "ABOR")
+        if (hasActiveChannel() && upperVerb != "ABOR")
         {
             log_error("Transfer in progress. Only ABOR is allowed.");
             continue;
@@ -830,39 +860,70 @@ int main(int argc, char *argv[])
 
         if (upperVerb == "ABOR")
         {
-            DataChannel *ch = g_active_channel.load();
-            if (ch != nullptr)
+            DataChannel *channel = getActiveChannel();
+
+            if (channel == nullptr)
             {
-                // Bước 1: Gửi ABOR lên server
-                std::string to_send = "ABOR\r\n";
-                send(sock, to_send.c_str(), to_send.length(), 0);
+                sendCommandAndGetReply(sock, recv_buffer, "ABOR");
+                continue;
+            }
 
-                // Bước 2: Set cờ hủy trên DataChannel
-                ch->abortTransfer();
+            g_abort_in_progress.store(true);
 
-                // Bước 3: Đợi transfer thread kết thúc (tối đa 3 giây)
-                log_info("Waiting for transfer thread to finish...");
-                for (int i = 0; i < 60 && g_active_channel.load() != nullptr; i++)
-                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-
-                if (g_active_channel.load() != nullptr)
+            {
+                std::lock_guard<std::mutex> lock(g_control_mutex);
+                if (!sendAll(sock, "ABOR\r\n"))
                 {
-                    log_error("Transfer thread did not finish in time.");
+                    log_error("Failed to send ABOR command.");
+                    g_abort_in_progress.store(false);
+                    continue;
+                }
+            }
+
+            // Abort while holding the pointer-protection mutex so the transfer
+            // thread cannot clear/delete the DataChannel at the same instant.
+            {
+                std::lock_guard<std::mutex> lock(g_active_channel_mutex);
+                if (g_active_channel != nullptr)
+                {
+                    g_active_channel->abortTransfer();
+                }
+            }
+
+            log_info("Waiting for transfer thread to finish...");
+
+            for (int i = 0; i < 140 && hasActiveChannel(); ++i)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+
+            if (hasActiveChannel())
+            {
+                log_error("Transfer thread did not finish in time.");
+            }
+
+            std::string reply1;
+            std::string reply2;
+
+            {
+                std::lock_guard<std::mutex> lock(g_control_mutex);
+
+                if (receive_reply(sock, recv_buffer, reply1))
+                {
+                    std::cout << reply1;
                 }
 
-                // Bước 4: Luồng chính đọc 2 reply (426 và 226)
-                std::string reply1, reply2;
-                if (receive_reply(sock, recv_buffer, reply1))
-                    std::cout << reply1;
-                if (receive_reply(sock, recv_buffer, reply2))
+                // RFC 959 usually returns 426 followed by 226 for an active
+                // transfer. If the first reply is 225/226, there is no second.
+                if (reply1.rfind("426", 0) == 0 &&
+                    receive_reply(sock, recv_buffer, reply2))
+                {
                     std::cout << reply2;
+                }
+            }
 
-                log_info("ABOR complete.");
-            }
-            else
-            {
-                std::cout << "No transfer in progress." << std::endl;
-            }
+            g_abort_in_progress.store(false);
+            log_info("ABOR complete.");
             continue;
         }
 
@@ -879,21 +940,6 @@ int main(int argc, char *argv[])
             continue;
         }
 
-=======
-        if (upperVerb == "PUT")
-        {
-            std::string localPath, remoteName;
-            iss >> localPath >> remoteName;
-            if (localPath.empty())
-            {
-                std::cout << "[CLIENT][USAGE] PUT <local_file> [remote_name]\n";
-                continue;
-            }
-            doPut(sock, recv_buffer, localPath, remoteName);
-            continue;
-        }
-
->>>>>>> Stashed changes
         if (upperVerb == "LS")
         {
             std::string dir;
@@ -908,41 +954,23 @@ int main(int argc, char *argv[])
             iss >> remoteName >> localPath;
             if (remoteName.empty())
             {
-<<<<<<< Updated upstream
                 std::cout << "Usage: get <remote_file> [local_name]" << std::endl;
                 continue;
             }
             doGet(sock, recv_buffer, remoteName, localPath, currentType);
-=======
-                std::cout << "[CLIENT][USAGE] GET <remote_file> [local_name]\n";
-                continue;
-            }
-            doGet(sock, recv_buffer, remoteName, localPath);
->>>>>>> Stashed changes
             continue;
         }
 
         if (upperVerb == "GETP")
-<<<<<<< Updated upstream
         {
-=======
-            {
->>>>>>> Stashed changes
             std::string remoteName, localPath;
             iss >> remoteName >> localPath;
             if (remoteName.empty())
             {
-<<<<<<< Updated upstream
                 std::cout << "Usage: getp <remote_file> [local_name]" << std::endl;
                 continue;
             }
             doGetViaPasv(sock, recv_buffer, remoteName, localPath, currentType);
-=======
-                std::cout << "[CLIENT][USAGE] GETP <remote_file> [local_name]\n";
-                continue;
-            }
-            doGetViaPasv(sock, recv_buffer, remoteName, localPath);
->>>>>>> Stashed changes
             continue;
         }
 
@@ -961,31 +989,19 @@ int main(int argc, char *argv[])
             std::string arg;
             iss >> arg;
             std::string upperArg = arg;
-            for (auto &c : upperArg)
-                c = toupper(c);
+            for (char &c : upperArg)
+            {
+                c = static_cast<char>(
+                    std::toupper(static_cast<unsigned char>(c)));
+            }
 
             if (upperArg != "A" && upperArg != "I")
             {
-<<<<<<< Updated upstream
                 std::cout << "Usage: TYPE A (ASCII) or TYPE I (Binary)" << std::endl;
                 continue;
             }
 
             std::string reply = sendCommandAndGetReply(sock, recv_buffer, "TYPE " + upperArg);
-            // std::cout << reply;
-            //sieuuuu
-
-=======
-                std::cout << "[CLIENT][USAGE] TYPE A | TYPE I\n";
-                continue;
-            }
-
-            // Gửi lệnh TYPE tới Server và nhận phản hồi
-            std::string reply = sendCommandAndGetReply(sock, recv_buffer, "TYPE " + upperArg);
-            std::cout << reply;
-
-            // Nếu Server xác nhận thành công (mã 200), cập nhật trạng thái ở Client (nếu có biến lưu currentType)
->>>>>>> Stashed changes
             if (reply.rfind("200", 0) == 0)
             {
                 currentType = (upperArg == "A") ? TransferType::ASCII : TransferType::BINARY;
@@ -999,19 +1015,11 @@ int main(int argc, char *argv[])
             iss >> arg;
             if (currentMode == Mode::PASSIVE)
             {
-<<<<<<< Updated upstream
                 doGetViaPasv(sock, recv_buffer, arg, "", currentType);
             }
             else
             {
                 doGet(sock, recv_buffer, arg, "", currentType);
-=======
-                doGetViaPasv(sock, recv_buffer, arg, "");
-            }
-            else
-            {
-                doGet(sock, recv_buffer, arg, "");
->>>>>>> Stashed changes
             }
             currentMode = Mode::NONE;
             continue;
@@ -1026,61 +1034,80 @@ int main(int argc, char *argv[])
             continue;
         }
 
-        if (upperVerb == "STOR" || upperVerb == "STOU" || upperVerb == "APPE")
+        if (upperVerb == "STOU")
         {
-            std::string arg;
-            iss >> arg;
-            if (arg.empty())
+            std::string localPath;
+            iss >> localPath;
+
+            if (localPath.empty())
             {
-<<<<<<< Updated upstream
-                std::cout << "Usage: " << verb << " <filename>" << std::endl;
+                std::cout << "Local file for STOU: " << std::flush;
+                std::getline(std::cin, localPath);
+            }
+
+            if (localPath.empty())
+            {
+                std::cout << "[CLIENT][ERROR] No local file specified for STOU.\n";
                 continue;
             }
-            doPut(sock, recv_buffer, arg, "", upperVerb, currentType);
+
+            doPut(sock, recv_buffer, localPath, "", "STOU", currentType);
             currentMode = Mode::NONE;
             continue;
         }
 
-=======
-                std::cout << "[CLIENT][USAGE] " << upperVerb << " <filename>\n";
+        if (upperVerb == "STOR" || upperVerb == "APPE")
+        {
+            std::string localPath;
+            std::string remoteName;
+            iss >> localPath >> remoteName;
+
+            if (localPath.empty())
+            {
+                std::cout
+                    << "[CLIENT][USAGE] "
+                    << upperVerb
+                    << " <local_file> [remote_name]\n";
                 continue;
             }
-            // Truyền đúng tên lệnh STOR / STOU / APPE vào doPut
-            doPut(sock, recv_buffer, arg, "", upperVerb);
+
+            doPut(
+                sock,
+                recv_buffer,
+                localPath,
+                remoteName,
+                upperVerb,
+                currentType);
+
             currentMode = Mode::NONE;
             continue;
-        }
->>>>>>> Stashed changes
-        std::string to_send = input + "\r\n";
-        if (send(sock, to_send.c_str(), to_send.length(), 0) == SOCKET_ERROR)
-        {
-            log_error("Failed to send command. Connection may be lost.");
-            break;
         }
 
         std::string reply;
-        if (!receive_reply(sock, recv_buffer, reply))
         {
-            log_error("Server closed the connection");
-            break;
+            std::lock_guard<std::mutex> lock(g_control_mutex);
+            const std::string toSend = input + "\r\n";
+
+            if (!sendAll(sock, toSend))
+            {
+                log_error("Failed to send command. Connection may be lost.");
+                break;
+            }
+
+            if (!receive_reply(sock, recv_buffer, reply))
+            {
+                log_error("Server closed the connection.");
+                break;
+            }
         }
-<<<<<<< Updated upstream
-        std::cout << reply << std::endl;
 
-        if (upperVerb == "QUIT")
-            break;
-    }
-
-    closesocket(sock);
-=======
         std::cout << reply;
 
         if (upperVerb == "QUIT")
             break;
-
     }
+
     SocketPlatform::close(sock);
->>>>>>> Stashed changes
     cleanup_sockets();
 
     return 0;

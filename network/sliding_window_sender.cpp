@@ -2,16 +2,22 @@
 #include "udp_socket.h"
 #include "packet_builder.h"
 #include "../common/logger.h"
+#include <algorithm>
 #include <chrono>
 
 using Clock = std::chrono::steady_clock;
 using Ms    = std::chrono::milliseconds;
 
-SlidingWindowSender::SlidingWindowSender(UDPSocket &socket)
+SlidingWindowSender::SlidingWindowSender(
+    UDPSocket &socket,
+    int maxWindowRetries)
     : udp(socket),
       window(WINDOW_SIZE),
       acked(WINDOW_SIZE, false),
-      sentTime(WINDOW_SIZE)
+      sentTime(WINDOW_SIZE),
+      maxWindowRetries(maxWindowRetries > 0
+                           ? maxWindowRetries
+                           : DEFAULT_MAX_WINDOW_RETRIES)
 {
 }
 
@@ -30,7 +36,7 @@ void SlidingWindowSender::beginSession(const std::string &ip, unsigned short por
     aborted.store(false);
     std::fill(acked.begin(), acked.end(), false);
 
-    // ── FIX BUG 2: xả sạch buffer socket trước khi bắt đầu phiên mới ──
+    // Drain stale ACKs from a previous transfer before starting a new session.
     // Sau khi ABOR hoặc phiên cũ kết thúc, có thể còn ACK cũ
     // (seq từ phiên trước) nằm trong buffer OS. Nếu không xả,
     // drainAcks() của phiên mới sẽ đọc nhầm → stale ACK spam log
@@ -54,16 +60,9 @@ void SlidingWindowSender::beginSession(const std::string &ip, unsigned short por
     udp.setReceiveTimeout(POLL_TIMEOUT_MS);
 }
 
-// ─────────────────────────────────────────────────────────────────────
-//  drainAcks() — đọc tất cả ACK trong buffer socket.
-//
-//  FIX BUG 1: timeout socket được set 1 lần trong beginSession(),
-//  KHÔNG set lại ở đây. Trước đây drainAcks() set 5000ms rồi restore
-//  → mỗi lần không có ACK phải block 5000ms → file lớn = hàng phút.
-//
-//  ACK cumulative: ACK(n) xác nhận tất cả seq ≤ n → advance base
-//  thẳng đến n+1, không cần đánh dấu từng slot.
-// ─────────────────────────────────────────────────────────────────────
+// Read all currently available cumulative ACKs. The short socket timeout
+// is configured once in beginSession() so an empty ACK queue does not block
+// the sender for the full transfer timeout.
 int SlidingWindowSender::drainAcks()
 {
     int count = 0;
@@ -107,9 +106,9 @@ bool SlidingWindowSender::retransmitWindow()
     if (base == nextToSend) return true;
 
     windowRetries++;
-    if (windowRetries > MAX_WINDOW_RETRIES)
+    if (windowRetries > maxWindowRetries)
     {
-        log_error("[GBN] Max retries (" + std::to_string(MAX_WINDOW_RETRIES) +
+        log_error("[GBN] Max retries (" + std::to_string(maxWindowRetries) +
                   ") exceeded at base=" + std::to_string(base));
         return false;
     }
@@ -117,7 +116,7 @@ bool SlidingWindowSender::retransmitWindow()
     log_info("[GBN] Timeout — retransmit seq=" + std::to_string(base) +
              ".." + std::to_string(nextToSend - 1) +
              " (retry " + std::to_string(windowRetries) +
-             "/" + std::to_string(MAX_WINDOW_RETRIES) + ")");
+             "/" + std::to_string(maxWindowRetries) + ")");
 
     auto now = Clock::now();
     for (uint32_t seq = base; seq < nextToSend; seq++)

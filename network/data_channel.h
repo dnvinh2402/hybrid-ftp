@@ -1,6 +1,7 @@
 #ifndef DATA_CHANNEL_H
 #define DATA_CHANNEL_H
 
+#include <atomic>
 #include <string>
 #include "data_channel_config.h"
 #include "transfer_session.h"
@@ -71,7 +72,7 @@ private:
 
     bool opened;
     DataChannelConfig config;
-    bool busy = false;
+    std::atomic<bool> busy{false};
     SlidingWindowSender* windowSender = nullptr;
 };
 

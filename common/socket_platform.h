@@ -1,9 +1,8 @@
 #ifndef SOCKET_PLATFORM_H
 #define SOCKET_PLATFORM_H
 
-// Cross-platform wrapper for socket APIs.
-// Windows uses Winsock.
-// macOS/Linux use POSIX sockets.
+// Small cross-platform wrapper around the native socket API.
+// Windows uses Winsock; macOS/Linux use POSIX sockets.
 
 #ifdef _WIN32
 
@@ -21,11 +20,7 @@ namespace SocketPlatform
     inline bool initialize()
     {
         WSADATA wsaData{};
-
-        return WSAStartup(
-                   MAKEWORD(2, 2),
-                   &wsaData)
-               == 0;
+        return WSAStartup(MAKEWORD(2, 2), &wsaData) == 0;
     }
 
     inline void cleanup()
@@ -33,16 +28,20 @@ namespace SocketPlatform
         WSACleanup();
     }
 
-    inline int close(
-        SOCKET socketFd)
+    inline int close(SOCKET socketFd)
     {
-        return closesocket(
-            socketFd);
+        return closesocket(socketFd);
     }
 
     inline int lastError()
     {
         return WSAGetLastError();
+    }
+
+    inline bool isTimeoutError(int errorCode)
+    {
+        return errorCode == WSAETIMEDOUT ||
+               errorCode == WSAEWOULDBLOCK;
     }
 }
 
@@ -65,66 +64,30 @@ namespace SocketPlatform
 
     inline bool initialize()
     {
-        // POSIX sockets do not need
-        // global initialization.
         return true;
     }
 
     inline void cleanup()
     {
-        // POSIX sockets do not need
-        // global cleanup.
     }
 
-    inline int close(
-        SOCKET socketFd)
+    inline int close(SOCKET socketFd)
     {
-        return ::close(
-            socketFd);
+        return ::close(socketFd);
     }
 
     inline int lastError()
     {
         return errno;
     }
+
+    inline bool isTimeoutError(int errorCode)
+    {
+        return errorCode == EAGAIN ||
+               errorCode == EWOULDBLOCK;
+    }
 }
 
 #endif
 
 #endif
-
-#pragma once
-
-#ifdef _WIN32
-
-#include <winsock2.h>
-#include <ws2tcpip.h>
-
-#else
-
-#include <arpa/inet.h>
-#include <cerrno>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <unistd.h>
-
-using SOCKET = int;
-
-constexpr SOCKET INVALID_SOCKET = -1;
-constexpr int SOCKET_ERROR = -1;
-
-#endif
-
-namespace SocketPlatform
-{
-
-inline int getLastError()
-{
-#ifdef _WIN32
-    return WSAGetLastError();
-#else
-    return errno;
-#endif
-}
-
-}

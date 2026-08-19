@@ -1,28 +1,80 @@
 #include "data_channel.h"
 
 #include "../common/logger.h"
-#include "../common/protocol.h"
 #include "../common/socket_platform.h"
 
-#include "udp_socket.h"
-#include "rdt_sender.h"
-#include "rdt_receiver.h"
-#include "file_sender.h"
 #include "file_receiver.h"
+#include "file_sender.h"
 #include "packet_builder.h"
+#include "rdt_receiver.h"
+#include "rdt_sender.h"
+#include "sliding_window_sender.h"
+#include "udp_socket.h"
 
+#include <atomic>
+#include <chrono>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
+#include <string>
+
+namespace
+{
+std::filesystem::path makeUniqueAsciiTempPath()
+{
+    static std::atomic<unsigned long long> counter{0};
+
+    const auto now =
+        std::chrono::steady_clock::now().time_since_epoch().count();
+
+    return std::filesystem::temp_directory_path()
+        / ("hybridftp_ascii_"
+           + std::to_string(now)
+           + "_"
+           + std::to_string(counter.fetch_add(1))
+           + ".tmp");
+}
+
+bool createCRLFFile(
+    const std::string &srcPath,
+    const std::filesystem::path &destPath)
+{
+    std::ifstream in(srcPath, std::ios::binary);
+    std::ofstream out(destPath, std::ios::binary | std::ios::trunc);
+
+    if (!in.is_open() || !out.is_open())
+    {
+        return false;
+    }
+
+    char c = 0;
+    char previous = 0;
+
+    while (in.get(c))
+    {
+        if (c == '\n' && previous != '\r')
+        {
+            out.put('\r');
+        }
+
+        out.put(c);
+        previous = c;
+    }
+
+    return out.good();
+}
+}
 
 DataChannel::DataChannel()
+    : socket(nullptr),
+      sender(nullptr),
+      receiver(nullptr),
+      fileSender(nullptr),
+      fileReceiver(nullptr),
+      opened(false),
+      busy(false),
+      windowSender(nullptr)
 {
-    socket = nullptr;
-    sender = nullptr;
-    receiver = nullptr;
-    fileSender = nullptr;
-    fileReceiver = nullptr;
-    windowSender = nullptr;
-    opened = false;
 }
 
 DataChannel::~DataChannel()
@@ -54,34 +106,37 @@ void DataChannel::resetResources()
         socket = nullptr;
     }
 }
+
 bool DataChannel::initializeNetwork()
 {
     if (!SocketPlatform::initialize())
     {
-        log_error(
-            "Failed to initialize "
-            "socket platform.");
-
+        log_error("Failed to initialize socket platform.");
         return false;
     }
 
     return true;
 }
+
 void DataChannel::cleanupNetwork()
 {
     SocketPlatform::cleanup();
 }
+
 bool DataChannel::open(const DataChannelConfig &config)
 {
-    this->config = config;
     if (opened)
     {
         log_info("DataChannel already opened.");
         return true;
     }
 
+    this->config = config;
+
     if (!initializeNetwork())
+    {
         return false;
+    }
 
     socket = new UDPSocket();
 
@@ -101,86 +156,88 @@ bool DataChannel::open(const DataChannelConfig &config)
         return false;
     }
 
-    socket->setReceiveTimeout(this->config.timeout);
+    if (!socket->setReceiveTimeout(this->config.timeout))
+    {
+        resetResources();
+        cleanupNetwork();
+        log_error("Open DataChannel failed: cannot configure timeout.");
+        return false;
+    }
 
-    sender = new RDTSender(*socket);
-
-    // Truyền config.simulateAckLoss vào RDTReceiver -- trước đây RDTReceiver
-    // tự bật hành vi test cứng bên trong nó, giờ do DataChannelConfig
-    // quyết định (mặc định false -> hành vi ACK bình thường).
+    sender = new RDTSender(*socket, this->config.maxRetry);
     receiver = new RDTReceiver(*socket, this->config.simulateAckLoss);
 
     if (this->config.useGBN)
     {
-        windowSender = new SlidingWindowSender(*socket);
-        // SlidingWindowSender.WINDOW_SIZE override bằng config nếu muốn
+        windowSender = new SlidingWindowSender(*socket, this->config.maxRetry);
     }
 
     fileSender = new FileSender(*sender);
     fileReceiver = new FileReceiver(*receiver);
 
     if (windowSender != nullptr)
+    {
         fileSender->setWindowSender(windowSender);
-    log_info("Mode     : " + std::string(this->config.useGBN
-                                             ? "Go-Back-N (W=32)"
-                                             : "Stop-and-Wait"));
+    }
+
     opened = true;
+    busy.store(false);
+
     log_info("================================");
     log_info("Open DataChannel");
     log_info("Local Port : " + std::to_string(this->config.localPort));
-    log_info("Timeout : " + std::to_string(this->config.timeout) + " ms");
+    log_info("Timeout    : " + std::to_string(this->config.timeout) + " ms");
+    log_info(
+        "Mode       : "
+        + std::string(
+            this->config.useGBN
+                ? ("Go-Back-N (W="
+                   + std::to_string(SlidingWindowSender::WINDOW_SIZE)
+                   + ")")
+                : "Stop-and-Wait"));
     log_info("================================");
 
     return true;
 }
+
 bool DataChannel::isOpened() const
 {
     return opened;
 }
+
 void DataChannel::close()
 {
     if (!opened)
+    {
         return;
+    }
 
-    log_info("================================");
-    log_info("Closing DataChannel");
-    log_info("Local Port : " + std::to_string(config.localPort));
+    // The owner must stop the active transfer before closing its resources.
+    if (busy.load())
+    {
+        log_error("Refusing to close DataChannel while a transfer is active.");
+        return;
+    }
+
+    log_info("Closing DataChannel.");
+
     resetResources();
     cleanupNetwork();
-    busy = false;
+
     opened = false;
-    log_info("================================");
+    busy.store(false);
 }
 
-static bool createCRLFFile(const std::string &srcPath, const std::string &destPath)
-{
-    std::ifstream in(srcPath, std::ios::binary);
-    std::ofstream out(destPath, std::ios::binary);
-    if (!in.is_open() || !out.is_open()) return false;
-    
-    char c;
-    char prev = 0;
-    while (in.get(c)) {
-        if (c =='\n' && prev != '\r') {
-            out.put('\r'); // Tự động chèn \r trước \n nếu chưa có
-        }
-        out.put(c);
-        prev = c;
-    }
-    return true;
-}
 int DataChannel::getSocketFd() const
 {
-    // Kiểm tra xem kênh đã mở và con trỏ socket đã được khởi tạo chưa
     if (opened && socket != nullptr)
     {
-        // Gọi hàm getSocketFd() của đối tượng UDPSocket
         return static_cast<int>(socket->getSocketFd());
     }
-    
-    // Nếu chưa mở kênh hoặc con trỏ null, trả về -1 theo đúng comment trong file header
+
     return -1;
 }
+
 bool DataChannel::sendFile(
     const std::string &file,
     const std::string &ip,
@@ -193,76 +250,93 @@ bool DataChannel::sendFile(
         return false;
     }
 
-    if (busy)
+    bool expected = false;
+    if (!busy.compare_exchange_strong(expected, true))
     {
         log_error("DataChannel is busy.");
         return false;
     }
 
-    busy = true;
     bool success = false;
 
-    if (type == TransferType::ASCII) {
-        // Tạo file tạm với CRLF
-        std::string tempFile = file + ".tmp_ascii";
-        if (!createCRLFFile(file, tempFile)) {
-            log_error("Failed to create CRLF temporary file.");
-            busy = false;
+    if (type == TransferType::ASCII)
+    {
+        const std::filesystem::path tempFile = makeUniqueAsciiTempPath();
+
+        if (!createCRLFFile(file, tempFile))
+        {
+            log_error("Failed to create ASCII CRLF temporary file.");
+            busy.store(false);
             return false;
         }
-        //gửi file tạm bằng fileSender hiện có
-        success = fileSender->sendFile(tempFile, ip, port);
 
-        std::remove(tempFile.c_str()); // Xóa file tạm sau khi gửi
-    } else {
+        success = fileSender->sendFile(tempFile.string(), ip, port);
 
-        //BINARY transfer, gửi trực tiếp file gốc
+        std::error_code ec;
+        std::filesystem::remove(tempFile, ec);
+    }
+    else
+    {
         success = fileSender->sendFile(file, ip, port);
     }
-    busy = false;
+
+    busy.store(false);
     return success;
 }
-bool DataChannel::receiveFile(const std::string& outputDir)
+
+bool DataChannel::receiveFile(const std::string &outputDir)
 {
     if (!opened || fileReceiver == nullptr)
     {
         log_error("DataChannel is not opened.");
         return false;
     }
-    if (busy)
+
+    bool expected = false;
+    if (!busy.compare_exchange_strong(expected, true))
     {
         log_error("DataChannel is busy.");
         return false;
     }
 
-    busy = true;
-    bool result = fileReceiver->receiveFile(outputDir);
-    busy = false;
+    const bool result = fileReceiver->receiveFile(outputDir);
+
+    busy.store(false);
     return result;
 }
+
 bool DataChannel::isBusy() const
 {
-    return busy;
+    return busy.load();
 }
+
 const TransferSession &DataChannel::getTransferSession() const
 {
     return fileSender->getSession();
 }
+
 const TransferSession &DataChannel::getReceiveTransferSession() const
 {
     return fileReceiver->getSession();
 }
-bool DataChannel::sendHandshake(const std::string &ip, unsigned short port)
+
+bool DataChannel::sendHandshake(
+    const std::string &ip,
+    unsigned short port)
 {
     if (!opened || socket == nullptr)
     {
         log_error("DataChannel is not opened.");
         return false;
     }
+
     auto syn = PacketBuilder::buildSynPacket(0);
     return socket->sendPacket(syn, ip, port);
 }
-bool DataChannel::receiveHandshake(std::string &outIp, unsigned short &outPort)
+
+bool DataChannel::receiveHandshake(
+    std::string &outIp,
+    unsigned short &outPort)
 {
     if (!opened || socket == nullptr)
     {
@@ -270,12 +344,10 @@ bool DataChannel::receiveHandshake(std::string &outIp, unsigned short &outPort)
         return false;
     }
 
-    RDTPacket packet;
+    RDTPacket packet{};
     std::string senderIp;
-    unsigned short senderPort;
+    unsigned short senderPort = 0;
 
-    // Đọc trực tiếp qua socket (không qua RDTReceiver::receive(), vì gói
-    // SYN không cần ACK lại) -- timeout đã được set khi open() (setReceiveTimeout).
     if (!socket->receivePacket(packet, senderIp, senderPort))
     {
         log_error("Handshake timeout: no SYN received from client.");
@@ -290,15 +362,24 @@ bool DataChannel::receiveHandshake(std::string &outIp, unsigned short &outPort)
 
     outIp = senderIp;
     outPort = senderPort;
-    log_info("Handshake OK. Client data address: " + outIp + ":" + std::to_string(outPort));
+
+    log_info(
+        "Handshake OK. Client data address: "
+        + outIp
+        + ":"
+        + std::to_string(outPort));
+
     return true;
 }
+
 void DataChannel::abortTransfer()
 {
-    if (!opened)
+    if (!opened || !busy.load())
+    {
         return;
+    }
 
-    log_info("DataChannel: Initiating abort sequence...");
+    log_info("DataChannel: abort requested.");
 
     if (fileReceiver != nullptr)
     {
@@ -310,6 +391,6 @@ void DataChannel::abortTransfer()
         fileSender->abortTransfer();
     }
 
-    // KHÔNG close() ở đây.
-    // Transfer hiện tại phải tự thoát trước.
+    // Do not free sockets/resources here. The transfer thread owns the
+    // active operation and will return cooperatively after observing the flag.
 }
