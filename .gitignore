@@ -1,3 +1,6 @@
 build/
 *.exe
 ftp_root/
+*.deb
+client/*.deb
+*.tmp_ascii
