@@ -92,3 +92,39 @@ namespace SocketPlatform
 #endif
 
 #endif
+
+#pragma once
+
+#ifdef _WIN32
+
+#include <winsock2.h>
+#include <ws2tcpip.h>
+
+#else
+
+#include <arpa/inet.h>
+#include <cerrno>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+using SOCKET = int;
+
+constexpr SOCKET INVALID_SOCKET = -1;
+constexpr int SOCKET_ERROR = -1;
+
+#endif
+
+namespace SocketPlatform
+{
+
+inline int getLastError()
+{
+#ifdef _WIN32
+    return WSAGetLastError();
+#else
+    return errno;
+#endif
+}
+
+}

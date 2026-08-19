@@ -1,6 +1,7 @@
 #include "udp_socket.h"
 
 #include "../common/logger.h"
+#include "../common/socket_platform.h"
 
 #include <array>
 #include <cstring>
@@ -179,7 +180,7 @@ bool UDPSocket::sendPacket(const RDTPacket& packet,
     if(sent == SOCKET_ERROR)
     {
         // THÊM 2 DÒNG NÀY ĐỂ BẮT MÃ LỖI CHÍNH XÁC CỦA WINDOWS
-        int errCode = WSAGetLastError();
+        int errCode = SocketPlatform::getLastError();
         log_error("Failed to send UDP packet. WSA Error Code: " + std::to_string(errCode));
         
         return false;

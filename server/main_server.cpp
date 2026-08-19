@@ -1,332 +1,248 @@
-#include <iostream>
+#include <atomic>
+#include <chrono>
+#include <cctype>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
-#include <string>
 #include <filesystem>
+#include <fstream>
+#include <iostream>
 #include <optional>
 #include <random>
+#include <sstream>
+#include <string>
 #include <thread>
-#include <fstream>
-#include <unordered_map>
-#include "authentication_manager.h"
-#include "session_registry.h"
-#include "../common/sha256.h"
+#include <vector>
+
 #include "../common/logger.h"
 #include "../common/protocol.h"
+#include "../common/sha256.h"
 #include "../common/socket_platform.h"
+
 #include "../network/data_channel.h"
 #include "../network/data_channel_config.h"
 
-#define SERVER_PORT 2121
 #define BUFFER_SIZE 1024
-
 namespace fs = std::filesystem;
-// chứa đường dẫn tuyệt đối đến thư mục ftp_root
-const fs::path SERVER_ROOT = fs::absolute("ftp_root");
 
-// New feature modules. They are shared by all client threads.
-AuthenticationManager g_authenticationManager;
-SessionRegistry g_sessionRegistry;
+const fs::path CLIENT_ROOT = "client_files";
 
-// Hàm khởi tạo Socket
 bool init_sockets()
 {
     return
         SocketPlatform::initialize();
 }
 
-// Hàm dọn dẹp Socket khi đóng chương trình
 void cleanup_sockets()
 {
     SocketPlatform::cleanup();
 }
 
-void send_reply(SOCKET client_socket, const std::string &reply)
+// Trạng thái kênh dữ liệu ở Client
+enum class Mode
 {
-    send(client_socket, reply.c_str(), reply.length(), 0);
-    // log_debug("Sent reply: " + reply);
-}
+    NONE,
+    ACTIVE,
+    PASSIVE
+};
+Mode currentMode = Mode::NONE;
+std::atomic<bool> is_transferring(false);
+TransferType currentType = TransferType::ASCII;
 
-std::optional<fs::path> resolveVirtualPath(const ClientSession &session, const std::string &arg)
+std::string pasvIp;
+int pasvPort = 0;
+int activePort = 0;
+std::atomic<DataChannel *> g_active_channel{nullptr};
+
+// receive_reply(): đọc ĐÚNG 1 dòng reply hoàn chỉnh từ server, dùng buffer
+// tích lũy sống suốt phiên (truyền theo tham chiếu).
+bool receive_reply(SOCKET sock, std::string &recv_buffer, std::string &reply)
 {
-    // Nếu arg rỗng -> dùng thư mục hiện tại của session
-    // Nếu arg bắt đầu bằng / → coi như đường dẫn tuyệt đối trong không gian ảo của FTP
-    fs::path virtualPath = arg.empty() ? fs::path(session.currentDir)
-                                       : (arg[0] == '/' ? fs::path(arg)
-                                                        : fs::path(session.currentDir) / arg); // đường dẫn “ảo” mà client muốn truy cập.
+    reply.clear();
+    char buffer[1024];
+    std::string multiLineCode = ""; // Lưu mã 3 chữ số nếu gặp multi-line (ví dụ "214 ")
 
-    // Ghép với SERVER_ROOT rồi rút gọn ".." "." (lexically_normal không cần
-    // file tồn tại thật, an toàn để kiểm tra trước khi đụng vào đĩa)
-    fs::path combined = (SERVER_ROOT / virtualPath.relative_path()).lexically_normal(); // Ghép virtualPath với SERVER_ROOT để tạo đường dẫn thực trên máy.
-
-    // Chuyển cả 2 về dạng chuỗi để so sánh "combined có nằm bên trong SERVER_ROOT không"
-    std::string rootStr = SERVER_ROOT.string();
-    std::string combinedStr = combined.string();
-    if (combinedStr.size() < rootStr.size() ||
-        combinedStr.compare(0, rootStr.size(), rootStr) != 0)
+    while (true)
     {
-        return std::nullopt; // cố thoát ra ngoài -> từ chối
-    }
-    return combined;
-}
-
-// Chuyển 1 đường dẫn THẬT trên đĩa (đã nằm trong SERVER_ROOT) ngược lại
-// thành đường dẫn "ảo" để hiển thị / lưu vào session.currentDir.
-std::string toVirtualPath(const fs::path &realPath)
-{
-    fs::path rel = fs::relative(realPath, SERVER_ROOT); // tạo đường dẫn tương đối từ SERVER_ROOT đến realPat
-    if (rel == ".")
-        return "/"; // dang o dung thu muc goc
-    return "/" + rel.generic_string();
-}
-
-// Chuyển quyền truy cập của file/thư mục thành chuỗi rwxrwxrwx.
-// Ví dụ: rw-r--r--, rwxr-xr-x.
-std::string getPermissionString(const fs::path &path)
-{
-    std::error_code ec;
-
-    fs::perms permissions =
-        fs::status(path, ec).permissions();
-
-    if (ec)
-    {
-        return "---------";
-    }
-
-    std::string result;
-
-    result +=
-        (permissions & fs::perms::owner_read) != fs::perms::none
-            ? 'r'
-            : '-';
-
-    result +=
-        (permissions & fs::perms::owner_write) != fs::perms::none
-            ? 'w'
-            : '-';
-
-    result +=
-        (permissions & fs::perms::owner_exec) != fs::perms::none
-            ? 'x'
-            : '-';
-
-    result +=
-        (permissions & fs::perms::group_read) != fs::perms::none
-            ? 'r'
-            : '-';
-
-    result +=
-        (permissions & fs::perms::group_write) != fs::perms::none
-            ? 'w'
-            : '-';
-
-    result +=
-        (permissions & fs::perms::group_exec) != fs::perms::none
-            ? 'x'
-            : '-';
-
-    result +=
-        (permissions & fs::perms::others_read) != fs::perms::none
-            ? 'r'
-            : '-';
-
-    result +=
-        (permissions & fs::perms::others_write) != fs::perms::none
-            ? 'w'
-            : '-';
-
-    result +=
-        (permissions & fs::perms::others_exec) != fs::perms::none
-            ? 'x'
-            : '-';
-
-    return result;
-}
-
-// Tạo một dòng chi tiết cho lệnh LIST.
-// Format:
-// <type> <permissions> <size> <name>
-//
-// type:
-// d = directory
-// - = regular file
-// ? = loại khác
-std::string buildListEntry(
-    const fs::directory_entry &entry)
-{
-    char type = '?';
-
-    if (entry.is_directory())
-    {
-        type = 'd';
-    }
-    else if (entry.is_regular_file())
-    {
-        type = '-';
-    }
-
-    std::string sizeText = "-";
-
-    if (entry.is_regular_file())
-    {
-        std::error_code ec;
-
-        std::uintmax_t fileSize =
-            entry.file_size(ec);
-
-        if (!ec)
+        size_t pos;
+        while ((pos = recv_buffer.find('\n')) != std::string::npos)
         {
-            sizeText =
-                std::to_string(fileSize);
-        }
-    }
+            std::string line = recv_buffer.substr(0, pos);
+            recv_buffer.erase(0, pos + 1);
+            if (!line.empty() && line.back() == '\r')
+            {
+                line.pop_back();
+            }
 
-    return std::string(1, type) + " " + getPermissionString(entry.path()) + " " + sizeText + " " + entry.path().filename().string();
+            reply += line + "\r\n";
+
+            // Nếu chưa bật chế độ multi-line và dòng bắt đầu dạng "214-..."
+            if (multiLineCode.empty() && line.length() >= 4 && line[3] == '-')
+            {
+                multiLineCode = line.substr(0, 3) + " "; // Chờ dòng kết thúc bắt đầu bằng "214 "
+            }
+
+            // Kết thúc khi:
+            // 1. Là phản hồi 1 dòng đơn (single-line)
+            // 2. Gặp đúng dòng cuối cùng của phản hồi multi-line
+            if (multiLineCode.empty())
+            {
+                return true;
+            }
+            else if (line.length() >= 4 && line.compare(0, 4, multiLineCode) == 0)
+            {
+                return true;
+            }
+        }
+
+        // Nếu buffer chưa đủ 1 dòng hoàn chỉnh, đọc thêm từ Socket
+        int bytes_read = recv(sock, buffer, sizeof(buffer) - 1, 0);
+        if (bytes_read <= 0)
+        {
+            return false;
+        }
+        buffer[bytes_read] = '\0';
+        recv_buffer.append(buffer, bytes_read);
+    }
 }
 
-// Helper cho PORT / PASV: đọc "h1,h2,h3,h4,p1,p2" -> IP + port
-// Đây là định dạng chuẩn FTP: p_port = p1*256 + p2
-bool parsePortArg(const std::string &arg, std::string &outIp, int &outPort)
+// Gửi 1 lệnh FTP qua TCP rồi chờ đúng 1 dòng reply, in ra và trả về cho
+// nơi gọi tự kiểm tra mã trạng thái nếu cần.
+std::string sendCommandAndGetReply(SOCKET sock, std::string &recv_buffer, const std::string &command)
 {
-    int h1, h2, h3, h4, p1, p2;
-    if (sscanf(arg.c_str(), "%d,%d,%d,%d,%d,%d", &h1, &h2, &h3, &h4, &p1, &p2) != 6)
+    std::string to_send = command + "\r\n";
+    send(sock, to_send.c_str(), to_send.length(), 0);
+    std::string reply;
+    receive_reply(sock, recv_buffer, reply);
+    std::cout << reply;
+    return reply;
+}
+
+std::string extractSha256FromReply(const std::string &reply)
+{
+    const std::string prefix = "213 SHA256 ";
+
+    if (reply.rfind(prefix, 0) != 0)
+    {
+        return "";
+    }
+
+    std::string digest = reply.substr(prefix.length());
+
+    while (!digest.empty() &&
+           (digest.back() == '\r' ||
+            digest.back() == '\n'))
+    {
+        digest.pop_back();
+    }
+
+    return digest;
+}
+
+void verifyEndToEndIntegrity(
+    SOCKET sock,
+    std::string &recv_buffer,
+    const std::string &localFile,
+    const std::string &remoteFile)
+{
+    const std::string localDigest =
+        SHA256::hashFile(localFile);
+
+    if (localDigest.empty())
+    {
+        std::cout
+            << "[CLIENT][ERROR] Cannot calculate "
+               "local SHA-256: "
+            << localFile
+            << '\n';
+
+        return;
+    }
+
+    const std::string hashReply =
+        sendCommandAndGetReply(
+            sock,
+            recv_buffer,
+            "HASH " + remoteFile);
+
+    const std::string serverDigest =
+        extractSha256FromReply(
+            hashReply);
+
+    if (serverDigest.empty())
+    {
+        std::cout
+            << "[CLIENT][ERROR] Server returned "
+               "an invalid SHA-256 digest.\n";
+
+        return;
+    }
+
+    std::cout
+        << "\n========== INTEGRITY CHECK ==========\n"
+        << "Local SHA-256   : "
+        << localDigest
+        << '\n'
+        << "Remote SHA-256  : "
+        << serverDigest
+        << '\n';
+
+    if (localDigest == serverDigest)
+    {
+        std::cout
+            << "Status          : MATCH\n";
+    }
+    else
+    {
+        std::cout
+            << "Status          : MISMATCH\n";
+    }
+
+    std::cout
+        << "=====================================\n\n";
+}
+
+// Bóc tách IP + port từ reply 227 của PASV: "227 ... (h1,h2,h3,h4,p1,p2)."
+bool parsePasvResponse(const std::string &response, std::string &outIp, int &outPort)
+{
+    size_t start = response.find('(');
+    size_t end = response.find(')');
+    if (start == std::string::npos || end == std::string::npos)
         return false;
-    outIp = std::to_string(h1) + "." + std::to_string(h2) + "." +
-            std::to_string(h3) + "." + std::to_string(h4);
-    outPort = p1 * 256 + p2; // FTP biểu diễn port bằng 2 byte
+
+    std::string data = response.substr(start + 1, end - start - 1);
+    int h1, h2, h3, h4, p1, p2;
+    if (sscanf(data.c_str(), "%d,%d,%d,%d,%d,%d", &h1, &h2, &h3, &h4, &p1, &p2) != 6)
+        return false;
+
+    outIp = std::to_string(h1) + "." + std::to_string(h2) + "." + std::to_string(h3) + "." + std::to_string(h4);
+    outPort = p1 * 256 + p2;
     return true;
 }
 
-// Lấy IP local của server (theo góc nhìn của kết nối TCP hiện tại) để trả
-// về trong reply PASV — dùng getsockname() thay vì hardcode IP.
-std::string getLocalIp(SOCKET client_socket)
+// Lấy IP local của CHÍNH client (theo góc nhìn của kết nối TCP hiện tại) --
+// dùng để điền vào lệnh PORT gửi cho server.
+std::string getLocalIp(SOCKET sock)
 {
     sockaddr_in localAddr{};
     SocketPlatform::Length len = sizeof(localAddr);
-    getsockname(client_socket, (struct sockaddr *)&localAddr, &len); // lấy địa chỉ IP và port mà socket client_socket đang sử dụng ở phía server.
+    getsockname(sock, (struct sockaddr *)&localAddr, &len);
     char ipBuf[INET_ADDRSTRLEN];
-    inet_ntop(AF_INET, &localAddr.sin_addr, ipBuf, sizeof(ipBuf)); // chuyển địa chỉ IP nhị phân (localAddr.sin_addr) thành chuỗi dạng "x.x.x.x".
+    inet_ntop(AF_INET, &localAddr.sin_addr, ipBuf, sizeof(ipBuf));
     return std::string(ipBuf);
 }
 
-// Dựng chuỗi reply 227 đúng định dạng FTP: "h1,h2,h3,h4,p1,p2"
-std::string formatPasvReply(const std::string &ip, int port)
+// Dựng chuỗi tham số PORT: "h1,h2,h3,h4,p1,p2"
+std::string formatPortArg(const std::string &ip, int port)
 {
     int h1, h2, h3, h4;
     sscanf(ip.c_str(), "%d.%d.%d.%d", &h1, &h2, &h3, &h4);
-    int p1 = port / 256; // byte cao
-    int p2 = port % 256; // byte thấp
-    return "227 Entering Passive Mode (" + std::to_string(h1) + "," + std::to_string(h2) + "," +
-           std::to_string(h3) + "," + std::to_string(h4) + "," + std::to_string(p1) + "," +
-           std::to_string(p2) + ").\r\n";
+    int p1 = port / 256, p2 = port % 256;
+    return std::to_string(h1) + "," + std::to_string(h2) + "," + std::to_string(h3) + "," +
+           std::to_string(h4) + "," + std::to_string(p1) + "," + std::to_string(p2);
 }
 
-std::string buildHelpReply(const std::string &commandArgument)
-{
-    if (commandArgument.empty())
-    {
-        return "214-The following commands are recognized:\r\n"
-               " USER PASS QUIT NOOP PWD CWD CDUP MKD RMD\r\n"
-               " LIST NLST STAT SIZE MDTM TYPE MODE PORT PASV\r\n"
-               " RETR STOR STOU APPE DELE RNFR RNTO HASH ABOR HELP\r\n"
-               "214 Help OK.\r\n";
-    }
-
-    std::string command = commandArgument;
-    for (char &character : command)
-    {
-        character = static_cast<char>(std::toupper(character));
-    }
-
-    static const std::unordered_map<std::string, std::string> helpTable = {
-        {"USER", "USER <username> - Send username for authentication."},
-        {"PASS", "PASS <password> - Send password to complete login."},
-        {"QUIT", "QUIT - Close the FTP session."},
-        {"NOOP", "NOOP - Keep the control connection alive."},
-        {"PWD", "PWD - Show the current server directory."},
-        {"CWD", "CWD <path> - Change the current directory."},
-        {"CDUP", "CDUP - Move to the parent directory."},
-        {"MKD", "MKD <dirname> - Create a directory."},
-        {"RMD", "RMD <dirname> - Remove an empty directory."},
-        {"LIST", "LIST [path] - Detailed directory listing."},
-        {"NLST", "NLST [path] - Name-only directory listing."},
-        {"STAT", "STAT [path] - Show server/session or path status."},
-        {"SIZE", "SIZE <filename> - Return file size in bytes."},
-        {"MDTM", "MDTM <filename> - Return last modification time."},
-        {"TYPE", "TYPE A|I - Select ASCII or binary transfer type."},
-        {"MODE", "MODE S|B|C - Select transfer mode."},
-        {"PORT", "PORT h1,h2,h3,h4,p1,p2 - Select Active mode."},
-        {"PASV", "PASV - Select Passive mode."},
-        {"RETR", "RETR <filename> - Download a file."},
-        {"STOR", "STOR <filename> - Upload a file."},
-        {"STOU", "STOU - Upload using a unique server-generated name."},
-        {"APPE", "APPE <filename> - Append uploaded data to a file."},
-        {"DELE", "DELE <filename> - Delete a file."},
-        {"RNFR", "RNFR <oldname> - Start rename operation."},
-        {"RNTO", "RNTO <newname> - Finish rename operation."},
-        {"HASH", "HASH <filename> - Return SHA-256 of a server file."},
-        {"ABOR", "ABOR - Request cancellation of the current transfer."},
-        {"HELP", "HELP [command] - Show command usage."}};
-
-    const auto iterator = helpTable.find(command);
-    if (iterator == helpTable.end())
-    {
-        return "501 Unknown HELP command.\r\n";
-    }
-
-    return "214 " + iterator->second + "\r\n";
-}
-// Chuyển dòng sang CRLF (\r\n) khi gửi ở chế độ ASCII
-std::string convertToCRLF(const std::string &buffer)
-{
-    std::string result;
-    result.reserve(buffer.size() * 1.1);
-    for (size_t i = 0; i < buffer.size(); ++i)
-    {
-        if (buffer[i] == '\n' && (i == 0 || buffer[i - 1] != '\r'))
-        {
-            result += "\r\n";
-        }
-        else
-        {
-            result += buffer[i];
-        }
-    }
-    return result;
-}
-
-// chuyênr đổi dòng CRLF (\r\n) sang LF (\n) khi nhận ở chế độ ASCII
-std::string convertFromCRLF(const std::string &buffer)
-{
-    std::string result;
-    result.reserve(buffer.size());
-    for (size_t i = 0; i < buffer.size(); ++i)
-    {
-        if (buffer[i] == '\r' && i + 1 < buffer.size() && buffer[i + 1] == '\n')
-        {
-            result += '\n';
-            ++i;
-        }
-        else
-        {
-            result += buffer[i];
-        }
-    }
-    return result;
-}
-void updateTransferState(ClientSession &session, bool transferActive)
-{
-    session.transferActive.store(transferActive);
-
-    if (transferActive)
-    {
-        session.abortRequested.store(false);
-    }
-    g_sessionRegistry.setTransferActive(session.sessionId, transferActive);
-    g_sessionRegistry.printSessions();
-}
-
-static bool convertCRLFToLFInFile(const fs::path &srcPath, const fs::path &dstPath)
+bool convertCRLFToLFInFile(const fs::path &srcPath, const fs::path &dstPath)
 {
     std::ifstream in(srcPath, std::ios::binary);
     std::ofstream out(dstPath, std::ios::binary);
@@ -348,1067 +264,1350 @@ static bool convertCRLFToLFInFile(const fs::path &srcPath, const fs::path &dstPa
     return true;
 }
 
-// Hàm xử lý phân tích và phản hồi lệnh FTP
-void handle_client_command(SOCKET client_socket, ClientSession &session, DataChannel &dataChannel, const std::string &raw_line)
+// ---------------------------------------------------------------------
+// doPut(): upload file lên server qua PASV. Chạy trên thread tách rời để
+// luồng chính vẫn có thể nhận lệnh ABOR trong lúc truyền.
+// ---------------------------------------------------------------------
+void doPut(
+    SOCKET sock,
+    std::string &recv_buffer,
+    std::string &localPath,
+    std::string remoteName,
+    std::string cmdVerb = "STOR",
+    TransferType type = TransferType::BINARY)
 {
-    // log_debug("Received command: " + raw_line);
-    ParsedCommand parsed = parseLine(raw_line);
+    // Hiện DataChannel::sendFile() trong code đang dùng
+    // interface 3 tham số. Giữ type để đồng bộ API
+    // client và TYPE A/I.
+    (void)type;
 
-    switch (parsed.cmd)
+    if (!fs::exists(localPath) &&
+        fs::exists(
+            CLIENT_ROOT / localPath))
     {
-    case FtpCommand::USER:
-    {
-        if (parsed.arg.empty())
-        {
-            send_reply(client_socket, FTPStatus::ERR_501);
-            break;
-        }
-
-        if (!g_authenticationManager.userExists(parsed.arg))
-        {
-            session.username.clear();
-            session.authenticated = false;
-            g_sessionRegistry.updateAuthentication(session.sessionId, "", false);
-            send_reply(client_socket, "530 User not found.\r\n");
-            break;
-        }
-
-        session.username = parsed.arg;
-        session.authenticated = false;
-        g_sessionRegistry.updateAuthentication(session.sessionId, session.username, false);
-        g_sessionRegistry.printSessions();
-
-        log_info("Client set username: " + session.username);
-        send_reply(client_socket, FTPStatus::NEED_PASS_331);
-        break;
-    }
-    case FtpCommand::PASS:
-    {
-        if (session.username.empty() ||
-            !g_authenticationManager.validateCredentials(session.username, parsed.arg))
-        {
-            session.authenticated = false;
-            g_sessionRegistry.updateAuthentication(session.sessionId, session.username, false);
-            send_reply(client_socket, "530 Login incorrect.\r\n");
-            break;
-        }
-
-        session.authenticated = true;
-        g_sessionRegistry.updateAuthentication(session.sessionId, session.username, true);
-        g_sessionRegistry.printSessions();
-
-        log_info("User '" + session.username + "' authenticated.");
-        send_reply(client_socket, FTPStatus::OK_230);
-        break;
-    }
-    case FtpCommand::NOOP:
-    {
-        send_reply(client_socket, FTPStatus::OK_200);
-        break;
-    }
-    case FtpCommand::QUIT:
-    {
-        send_reply(client_socket, FTPStatus::OK_221);
-        break;
+        localPath =
+            (CLIENT_ROOT / localPath)
+                .string();
     }
 
-    // ---------------- Từ đây trở xuống: bắt buộc phải login ----------------
-    default:
+    if (!fs::exists(localPath) ||
+        !fs::is_regular_file(localPath))
     {
-        if (!session.authenticated)
+        std::cout
+            << "[CLIENT][ERROR] Local file not found: "
+            << localPath
+            << '\n';
+
+        return;
+    }
+
+    // STOR/APPE cần remote filename.
+    // STOU không gửi remote filename vì
+    // server tự sinh tên unique.
+    if (remoteName.empty() &&
+        cmdVerb != "STOU")
+    {
+        remoteName =
+            fs::path(localPath)
+                .filename()
+                .string();
+    }
+
+    const std::string pasvReply =
+        sendCommandAndGetReply(
+            sock,
+            recv_buffer,
+            "PASV");
+
+    std::string serverIp;
+    int serverPort = 0;
+
+    if (pasvReply.rfind("227", 0) != 0 ||
+        !parsePasvResponse(
+            pasvReply,
+            serverIp,
+            serverPort))
+    {
+        std::cout
+            << "[CLIENT][ERROR] PASV negotiation "
+               "failed; upload cancelled.\n";
+
+        return;
+    }
+
+    DataChannel *dataChannel =
+        new DataChannel();
+
+    DataChannelConfig cfg;
+
+    cfg.localPort = 0;
+    cfg.timeout = 5000;
+    cfg.maxRetry = 5;
+    cfg.useGBN = true;
+
+    if (!dataChannel->open(cfg))
+    {
+        std::cout
+            << "[CLIENT][ERROR] Cannot open local "
+               "UDP data channel.\n";
+
+        delete dataChannel;
+
+        return;
+    }
+
+    // FTP protocol:
+    //
+    // STOR <filename>
+    // APPE <filename>
+    // STOU
+    std::string uploadCommand =
+        cmdVerb;
+
+    if (cmdVerb != "STOU")
+    {
+        uploadCommand +=
+            " " + remoteName;
+    }
+
+    const std::string storReply =
+        sendCommandAndGetReply(
+            sock,
+            recv_buffer,
+            uploadCommand);
+
+    if (storReply.rfind("150", 0) != 0)
+    {
+        dataChannel->close();
+
+        delete dataChannel;
+
+        return;
+    }
+
+    g_active_channel.store(
+        dataChannel);
+
+    std::thread(
+        [
+            sock,
+            &recv_buffer,
+            dataChannel,
+            localPath,
+            remoteName,
+            serverIp,
+            serverPort,
+            cmdVerb
+        ]()
         {
-            send_reply(client_socket, FTPStatus::ERR_530);
-            break;
-        }
+            log_info(
+                "Uploading (PASV) "
+                + localPath
+                + (cmdVerb == "STOU"
+                       ? ""
+                       : " -> " + remoteName)
+                + " ...");
 
-        switch (parsed.cmd)
-        {
-        case FtpCommand::PWD:
-        {
-            send_reply(client_socket, "257 \"" + session.currentDir + "\" is current directory.\r\n");
-            break;
-        }
+            // Upload => sendFile().
+            const bool ok =
+                dataChannel->sendFile(
+                    localPath,
+                    serverIp,
+                    static_cast<
+                        unsigned short>(
+                        serverPort));
 
-        case FtpCommand::CWD:
-        {
-            auto target = resolveVirtualPath(session, parsed.arg);
-            if (!target || !fs::is_directory(*target))
+            if (ok)
             {
-                send_reply(client_socket, FTPStatus::ERR_550);
-            }
-            else
-            {
-                session.currentDir = toVirtualPath(*target);
-                send_reply(client_socket, FTPStatus::OK_250);
-            }
-            break;
-        }
-        case FtpCommand::CDUP:
-        {
-            // Nếu đang ở thư mục gốc
-            // thì không đi lên nữa.
-            if (session.currentDir == "/")
-            {
-                send_reply(
-                    client_socket,
-                    FTPStatus::OK_250);
+                std::string finalReply;
 
-                break;
-            }
-
-            auto target =
-                resolveVirtualPath(
-                    session,
-                    "..");
-
-            if (!target ||
-                !fs::is_directory(*target))
-            {
-                send_reply(
-                    client_socket,
-                    FTPStatus::ERR_550);
-
-                break;
-            }
-
-            session.currentDir =
-                toVirtualPath(*target);
-
-            send_reply(
-                client_socket,
-                FTPStatus::OK_250);
-
-            break;
-        }
-        case FtpCommand::MKD:
-        {
-            auto target = resolveVirtualPath(session, parsed.arg);
-            if (!target || parsed.arg.empty())
-            {
-                send_reply(client_socket, FTPStatus::ERR_501);
-            }
-            else if (fs::exists(*target))
-            {
-                send_reply(client_socket, FTPStatus::ERR_550);
-            }
-            else
-            {
-                std::error_code ec;
-                fs::create_directory(*target, ec);
-                if (ec)
-                    send_reply(client_socket, FTPStatus::ERR_550);
-                else
-                    send_reply(client_socket, "257 \"" + toVirtualPath(*target) + "\" directory created.\r\n");
-            }
-            break;
-        }
-
-        case FtpCommand::RMD:
-        {
-            auto target = resolveVirtualPath(session, parsed.arg);
-            if (!target || !fs::is_directory(*target))
-            {
-                send_reply(client_socket, FTPStatus::ERR_550);
-            }
-            else
-            {
-                std::error_code ec;
-                fs::remove(*target, ec);
-                if (ec)
-                    send_reply(client_socket, FTPStatus::ERR_550);
-                else
-                    send_reply(client_socket, FTPStatus::OK_250);
-            }
-            break;
-        }
-
-        case FtpCommand::DELE:
-        {
-            auto target = resolveVirtualPath(session, parsed.arg);
-            if (!target || !fs::is_regular_file(*target))
-            {
-                send_reply(client_socket, FTPStatus::ERR_550);
-            }
-            else
-            {
-                std::error_code ec;
-                fs::remove(*target, ec);
-                if (ec)
-                    send_reply(client_socket, FTPStatus::ERR_550);
-                else
-                    send_reply(client_socket, FTPStatus::OK_250);
-            }
-            break;
-        }
-
-        case FtpCommand::RNFR:
-        {
-            auto target = resolveVirtualPath(session, parsed.arg);
-            if (!target || !fs::exists(*target))
-            {
-                send_reply(client_socket, FTPStatus::ERR_550);
-            }
-            else
-            {
-                session.renameFrom = parsed.arg;
-                send_reply(client_socket, FTPStatus::PENDING_350);
-            }
-            break;
-        }
-
-        case FtpCommand::RNTO:
-        {
-            if (session.renameFrom.empty())
-            {
-                send_reply(client_socket, FTPStatus::ERR_501); // chưa gọi RNFR trước
-                break;
-            }
-            auto from = resolveVirtualPath(session, session.renameFrom);
-            auto to = resolveVirtualPath(session, parsed.arg);
-            session.renameFrom.clear(); // dùng 1 lần rồi xoá, dù thành công hay không
-            if (!from || !to || !fs::exists(*from))
-            {
-                send_reply(client_socket, FTPStatus::ERR_550);
-            }
-            else
-            {
-                std::error_code ec;
-                fs::rename(*from, *to, ec);
-                if (ec)
-                    send_reply(client_socket, FTPStatus::ERR_550);
-                else
-                    send_reply(client_socket, FTPStatus::OK_250);
-            }
-            break;
-        }
-
-        case FtpCommand::TYPE:
-        {
-            std::string t = parsed.arg;
-            for (auto &c : t)
-                c = toupper(c);
-            if (t == "A")
-            {
-                session.type = TransferType::ASCII;
-                send_reply(client_socket, "200 Type set to A.\r\n");
-            }
-            else if (t == "I")
-            {
-                session.type = TransferType::BINARY;
-                send_reply(client_socket, "200 Type set to I.\r\n");
-            }
-            else
-            {
-                send_reply(client_socket, FTPStatus::ERR_501);
-            }
-            break;
-        }
-
-        case FtpCommand::SIZE:
-        {
-            auto target = resolveVirtualPath(session, parsed.arg);
-            if (!target || !fs::is_regular_file(*target))
-            {
-                send_reply(client_socket, FTPStatus::ERR_550);
-            }
-            else
-            {
-                std::error_code ec;
-                auto sz = fs::file_size(*target, ec);
-                if (ec)
-                    send_reply(client_socket, FTPStatus::ERR_550);
-                else
-                    send_reply(client_socket, "213 " + std::to_string(sz) + "\r\n");
-            }
-            break;
-        }
-
-        case FtpCommand::PORT:
-        {
-            std::string ip;
-            int port;
-            if (!parsePortArg(parsed.arg, ip, port))
-            {
-                send_reply(client_socket, FTPStatus::ERR_501);
-                break;
-            }
-
-            // Nếu trước đó đã mở kênh (ví dụ client gọi lại PORT lần 2)
-            // phải đóng kênh cũ trước khi mở kênh mới -- DataChannel::open()
-            // sẽ KHÔNG làm gì nếu thấy đã "opened", nên phải tự đóng tay.
-            if (dataChannel.isOpened())
-                dataChannel.close();
-
-            DataChannelConfig cfg;
-            cfg.localPort = 0; // ACTIVE mode: để hệ điều hành tự chọn port cho server
-            cfg.timeout = 2000;
-            cfg.maxRetry = 5;
-            cfg.useGBN = true;
-            cfg.simulateAckLoss = false;
-
-            if (!dataChannel.open(cfg))
-            {
-                send_reply(client_socket, FTPStatus::ERR_425);
-                break;
-            }
-
-            // Ghi lại số hiệu socket THẬT đang dùng vào session -- để
-            // chứng minh mỗi session sở hữu 1 tài nguyên OS hoàn toàn
-            // riêng biệt (phục vụ "fully isolated session"), có thể xem
-            // qua STAT khi có nhiều client kết nối cùng lúc.
-            session.dataSocketFd = dataChannel.getSocketFd();
-            session.pasvListenFd = -1; // không áp dụng cho ACTIVE mode
-
-            session.dataMode = DataConnMode::ACTIVE;
-            session.dataIp = ip;
-            session.dataPort = port;
-
-            log_info("Client requested ACTIVE mode -> " + ip + ":" + std::to_string(port));
-            send_reply(client_socket, FTPStatus::OK_200);
-            break;
-        }
-
-        case FtpCommand::PASV:
-        {
-            static std::mt19937 rng(std::random_device{}());
-            static std::uniform_int_distribution<int> distPort(50000, 51000);
-            std::string ip = getLocalIp(client_socket);
-
-            if (dataChannel.isOpened())
-            {
-                dataChannel.close();
-                session.dataSocketFd = -1;
-                session.pasvListenFd = -1;
-            }
-            bool opened = false;
-            int chosenPort = 0;
-            // Thử tối đa 10 lần vì có thể trùng port với client khác
-            // đang chạy song song (server đa luồng) -- xác suất rất
-            // thấp nhưng vẫn cần xử lý thay vì để treo/lỗi im lặng.
-            for (int attempt = 0; attempt < 10 && !opened; attempt++)
-            {
-                chosenPort = distPort(rng);
-                DataChannelConfig cfg;
-                cfg.localPort = static_cast<unsigned short>(chosenPort);
-                cfg.timeout = 2000;
-                cfg.maxRetry = 5;
-                cfg.simulateAckLoss = false;
-                cfg.useGBN = true;
-                opened = dataChannel.open(cfg);
-            }
-
-            if (!opened)
-            {
-                log_error("PASV: could not bind any UDP port after 10 attempts.");
-                send_reply(client_socket, FTPStatus::ERR_425);
-                break;
-            }
-
-            // Cùng 1 fd -- PASV chỉ có 1 socket vừa lắng nghe vừa truyền
-            // dữ liệu (khác TCP, không có accept() riêng), nhưng lưu vào
-            // 2 field tên khác nhau để phản ánh đúng VAI TRÒ trong session.
-            session.dataSocketFd = dataChannel.getSocketFd();
-            session.pasvListenFd = session.dataSocketFd;
-
-            session.dataMode = DataConnMode::PASSIVE;
-            session.dataIp = ip;
-            session.dataPort = chosenPort;
-            log_info("Server entering PASSIVE mode -> " + ip + ":" + std::to_string(chosenPort));
-            send_reply(client_socket, formatPasvReply(ip, chosenPort));
-            break;
-        }
-
-        case FtpCommand::STOR:
-        {
-            if (session.dataMode == DataConnMode::NONE || !dataChannel.isOpened())
-            {
-                send_reply(client_socket, FTPStatus::ERR_425);
-                break;
-            }
-            if (parsed.arg.empty())
-            {
-                send_reply(client_socket, FTPStatus::ERR_501);
-                break;
-            }
-
-            send_reply(client_socket, FTPStatus::OK_150);
-            updateTransferState(session, true);
-
-            // Toàn bộ receive + rename + reply trong 1 thread duy nhất.
-            // Main thread trả về vòng lặp recv() ngay → nhận được ABOR.
-            std::thread([client_socket, &session, arg = parsed.arg, &dataChannel]()
-            {
-                bool ok = dataChannel.receiveFile();
-                updateTransferState(session, false);
-
-                if (!ok)
+                if (receive_reply(
+                        sock,
+                        recv_buffer,
+                        finalReply))
                 {
-                    send_reply(client_socket, FTPStatus::ERR_426);
-                    return;
-                }
+                    std::cout
+                        << '\n'
+                        << finalReply;
 
-                const TransferSession &recvInfo = dataChannel.getReceiveTransferSession();
-                fs::path receivedPath = fs::path("server_files") / recvInfo.fileName;
-
-                // Dùng session trực tiếp (by ref) — không copy để tránh lỗi atomic
-                auto dest = resolveVirtualPath(session, arg);
-                if (!dest || !fs::exists(receivedPath))
-                {
-                    log_error("STOR: temp file not found after receive.");
-                    send_reply(client_socket, FTPStatus::ERR_550);
-                    return;
-                }
-
-                std::error_code ec;
-
-                if (session.type == TransferType::ASCII)
-                {
-                    if (!convertCRLFToLFInFile(receivedPath, *dest))
+                    // STOR có remote filename xác định,
+                    // nên có thể verify SHA-256 trực tiếp.
+                    if (finalReply.rfind(
+                            "226",
+                            0) == 0 &&
+                        cmdVerb == "STOR" &&
+                        !remoteName.empty())
                     {
-                        log_error("STOR: failed to convert CRLF to LF.");
-                        send_reply(client_socket, FTPStatus::ERR_550);
-                        return;
+                        verifyEndToEndIntegrity(
+                            sock,
+                            recv_buffer,
+                            localPath,
+                            remoteName);
                     }
-                    fs::remove(receivedPath, ec);
+                }
+            }
+            else
+            {
+                std::cout
+                    << "\n[CLIENT][ERROR] Upload aborted "
+                       "or failed at UDP data layer.\n";
+
+                // Khi ABOR, transfer thread không đọc
+                // FTP reply để tránh tranh chấp với
+                // control thread.
+            }
+
+            dataChannel->close();
+
+            // Không cho main thread dùng pointer
+            // sau khi transfer đã kết thúc.
+            g_active_channel.store(
+                nullptr);
+
+            delete dataChannel;
+
+            std::cout
+                << "ftp> "
+                << std::flush;
+        })
+        .detach();
+}
+
+// ---------------------------------------------------------------------
+// doGet(): download qua PORT (active mode). Chạy trên thread tách rời để
+// hỗ trợ ABOR; xử lý ASCII/BINARY và kiểm tra tính toàn vẹn SHA-256.
+// ---------------------------------------------------------------------
+void doGet(
+    SOCKET sock,
+    std::string &recv_buffer,
+    const std::string &remoteName,
+    std::string localPath,
+    TransferType type = TransferType::BINARY)
+{
+    fs::create_directories(
+        CLIENT_ROOT);
+
+    if (localPath.empty())
+    {
+        localPath =
+            (CLIENT_ROOT / remoteName)
+                .string();
+    }
+
+    static std::mt19937 rng(
+        std::random_device{}());
+
+    static std::uniform_int_distribution<int>
+        distPort(
+            40000,
+            41000);
+
+    const int myPort =
+        distPort(rng);
+
+    const std::string myIp =
+        getLocalIp(sock);
+
+    DataChannel *dataChannel =
+        new DataChannel();
+
+    DataChannelConfig cfg;
+
+    cfg.localPort =
+        static_cast<
+            unsigned short>(
+            myPort);
+
+    cfg.timeout = 3000;
+    cfg.maxRetry = 5;
+    cfg.useGBN = true;
+
+    if (!dataChannel->open(cfg))
+    {
+        std::cout
+            << "[CLIENT][ERROR] Cannot bind local "
+               "UDP port "
+            << myPort
+            << " for download.\n";
+
+        delete dataChannel;
+
+        return;
+    }
+
+    const std::string portReply =
+        sendCommandAndGetReply(
+            sock,
+            recv_buffer,
+            "PORT "
+                + formatPortArg(
+                    myIp,
+                    myPort));
+
+    if (portReply.rfind("200", 0) != 0)
+    {
+        dataChannel->close();
+
+        delete dataChannel;
+
+        return;
+    }
+
+    const std::string retrReply =
+        sendCommandAndGetReply(
+            sock,
+            recv_buffer,
+            "RETR " + remoteName);
+
+    if (retrReply.rfind("150", 0) != 0)
+    {
+        dataChannel->close();
+
+        delete dataChannel;
+
+        return;
+    }
+
+    g_active_channel.store(
+        dataChannel);
+
+    std::thread(
+        [
+            sock,
+            &recv_buffer,
+            dataChannel,
+            remoteName,
+            localPath,
+            type
+        ]()
+        {
+            log_info(
+                "Downloading "
+                + remoteName
+                + " ...");
+
+            const bool ok =
+                dataChannel->receiveFile();
+
+            if (ok)
+            {
+                const TransferSession &recvInfo =
+                    dataChannel->
+                        getReceiveTransferSession();
+
+                const fs::path receivedPath =
+                    fs::path("server_files")
+                    / recvInfo.fileName;
+
+                std::error_code ec;
+
+                if (type ==
+                    TransferType::ASCII)
+                {
+                    if (convertCRLFToLFInFile(
+                            receivedPath,
+                            localPath))
+                    {
+                        fs::remove(
+                            receivedPath,
+                            ec);
+
+                        std::cout
+                            << "\n[CLIENT][OK] Saved "
+                               "ASCII file: "
+                            << localPath
+                            << '\n';
+                    }
+                    else
+                    {
+                        if (fs::exists(
+                                localPath))
+                        {
+                            fs::remove(
+                                localPath,
+                                ec);
+                        }
+
+                        ec.clear();
+
+                        fs::rename(
+                            receivedPath,
+                            localPath,
+                            ec);
+
+                        if (ec)
+                        {
+                            std::cout
+                                << "\n[CLIENT][WARN] Download "
+                                   "completed, but file could "
+                                   "not be moved to: "
+                                << localPath
+                                << '\n'
+                                << "[CLIENT][INFO] Temporary file: "
+                                << receivedPath.string()
+                                << '\n';
+                        }
+                        else
+                        {
+                            std::cout
+                                << "\n[CLIENT][OK] Saved file: "
+                                << localPath
+                                << '\n';
+                        }
+                    }
                 }
                 else
                 {
-                    fs::rename(receivedPath, *dest, ec);
+                    if (fs::exists(
+                            localPath))
+                    {
+                        fs::remove(
+                            localPath,
+                            ec);
+                    }
+
+                    ec.clear();
+
+                    fs::rename(
+                        receivedPath,
+                        localPath,
+                        ec);
+
                     if (ec)
                     {
-                        send_reply(client_socket, FTPStatus::ERR_550);
-                        return;
+                        std::cout
+                            << "\n[CLIENT][WARN] Download "
+                               "completed, but file could "
+                               "not be moved to: "
+                            << localPath
+                            << '\n'
+                            << "[CLIENT][INFO] Temporary file: "
+                            << receivedPath.string()
+                            << '\n';
+                    }
+                    else
+                    {
+                        std::cout
+                            << "\n[CLIENT][OK] Saved file: "
+                            << localPath
+                            << '\n';
                     }
                 }
 
-                dataChannel.close();
-                session.dataMode = DataConnMode::NONE;
-                send_reply(client_socket, FTPStatus::OK_226);
-            }).detach();
+                // Chỉ đọc 226 nếu data transfer
+                // thực sự hoàn thành.
+                std::string finalReply;
 
-            break;
-        }
-
-    case FtpCommand::RETR:
-    {
-        if (session.dataMode == DataConnMode::NONE || !dataChannel.isOpened())
-        {
-            send_reply(client_socket, FTPStatus::ERR_425);
-            break;
-        }
-
-        auto target = resolveVirtualPath(session, parsed.arg);
-        if (!target || !fs::is_regular_file(*target))
-        {
-            send_reply(client_socket, FTPStatus::ERR_550);
-            break;
-        }
-
-        std::string destIp = session.dataIp;
-        unsigned short destPort = static_cast<unsigned short>(session.dataPort);
-
-        if (session.dataMode == DataConnMode::PASSIVE)
-        {
-            send_reply(client_socket, FTPStatus::OK_150);
-            std::string learnedIp;
-            unsigned short learnedPort;
-            if (!dataChannel.receiveHandshake(learnedIp, learnedPort))
-            {
-                send_reply(client_socket, FTPStatus::ERR_425);
-                break;
-            }
-            destIp = learnedIp;
-            destPort = learnedPort;
-        }
-        else
-        {
-            send_reply(client_socket, FTPStatus::OK_150);
-        }
-
-        // Bọc vào luồng riêng để không block luồng chính
-        updateTransferState(session, true);
-        std::thread([client_socket, &session, targetPath = target->string(),
-                     destIp, destPort, &dataChannel]()
-        {
-            bool ok = dataChannel.sendFile(targetPath, destIp, destPort);
-            updateTransferState(session, false);
-            dataChannel.close();
-            session.dataMode = DataConnMode::NONE;
-            send_reply(client_socket, ok ? FTPStatus::OK_226 : FTPStatus::ERR_426);
-        }).detach();
-
-        break;
-    }
-    case FtpCommand::LIST:
-    {
-        if (session.dataMode == DataConnMode::NONE || !dataChannel.isOpened())
-        {
-            send_reply(client_socket, FTPStatus::ERR_425);
-            break;
-        }
-
-        auto dirPath = resolveVirtualPath(session, parsed.arg);
-        if (!dirPath || !fs::is_directory(*dirPath))
-        {
-            send_reply(client_socket, FTPStatus::ERR_550);
-            break;
-        }
-
-        // Ghi danh sách thư mục ra 1 file tạm, rồi gửi file tạm đó qua
-        // DataChannel giống hệt cách RETR gửi 1 file bình thường --
-        // tái dùng đúng logic FileSender đã test kỹ, không viết lại.
-        fs::path tempListing = fs::temp_directory_path() /
-                               ("list_" + std::to_string(session.controlSocketFd) + ".txt");
-        {
-            std::ofstream listFile(tempListing);
-
-            for (const auto &entry :
-                 fs::directory_iterator(*dirPath))
-            {
-                listFile
-                    << buildListEntry(entry)
-                    << "\n";
-            }
-        }
-
-        std::string destIp = session.dataIp;
-        unsigned short destPort = static_cast<unsigned short>(session.dataPort);
-
-        // Hỗ trợ PASV cho LIST bằng cách nhận Handshake từ Client
-        if (session.dataMode == DataConnMode::PASSIVE)
-        {
-            send_reply(client_socket, FTPStatus::OK_150);
-            std::string learnedIp;
-            unsigned short learnedPort;
-            if (!dataChannel.receiveHandshake(learnedIp, learnedPort))
-            {
-                std::error_code ec;
-                fs::remove(tempListing, ec);
-                send_reply(client_socket, FTPStatus::ERR_425);
-                break;
-            }
-            destIp = learnedIp;
-            destPort = learnedPort;
-        }
-        else
-        {
-            send_reply(client_socket, FTPStatus::OK_150);
-        }
-
-        updateTransferState(session, true);
-        bool ok = dataChannel.sendFile(tempListing.string(), destIp, destPort);
-        updateTransferState(session, false);
-        std::error_code ec;
-        fs::remove(tempListing, ec);
-        send_reply(client_socket, ok ? FTPStatus::OK_226 : FTPStatus::ERR_426);
-        break;
-    }
-
-    case FtpCommand::NLST:
-    {
-        if (session.dataMode == DataConnMode::NONE || !dataChannel.isOpened())
-        {
-            send_reply(client_socket, FTPStatus::ERR_425);
-            break;
-        }
-
-        auto dirPath = resolveVirtualPath(session, parsed.arg);
-        if (!dirPath || !fs::is_directory(*dirPath))
-        {
-            send_reply(client_socket, FTPStatus::ERR_550);
-            break;
-        }
-
-        // LIST: "d ten" / "- ten" (kieu giong 'ls -l' rut gon)
-        // NLST: chi ten file/thu muc, moi dong 1 ten (kieu 'ls' tron)
-        bool isNlst = (parsed.cmd == FtpCommand::NLST);
-        fs::path tempListing = fs::temp_directory_path() /
-                               ("list_" + std::to_string(session.controlSocketFd) + ".txt");
-        {
-            std::ofstream listFile(tempListing);
-            for (auto &entry : fs::directory_iterator(*dirPath))
-            {
-                if (isNlst)
+                if (receive_reply(
+                        sock,
+                        recv_buffer,
+                        finalReply))
                 {
-                    listFile << entry.path().filename().string() << "\n";
+                    std::cout
+                        << finalReply;
+
+                    if (finalReply.rfind(
+                            "226",
+                            0) == 0 &&
+                        fs::exists(
+                            localPath))
+                    {
+                        verifyEndToEndIntegrity(
+                            sock,
+                            recv_buffer,
+                            localPath,
+                            remoteName);
+                    }
                 }
-                else
-                {
-                    listFile << (entry.is_directory() ? "d " : "- ")
-                             << entry.path().filename().string() << "\n";
-                }
-            }
-        }
-
-        std::string destIp = session.dataIp;
-        unsigned short destPort = static_cast<unsigned short>(session.dataPort);
-
-        if (session.dataMode == DataConnMode::PASSIVE)
-        {
-            send_reply(client_socket, FTPStatus::OK_150);
-            std::string learnedIp;
-            unsigned short learnedPort;
-            if (!dataChannel.receiveHandshake(learnedIp, learnedPort))
-            {
-                std::error_code ec;
-                fs::remove(tempListing, ec);
-                send_reply(client_socket, FTPStatus::ERR_425);
-                break;
-            }
-            destIp = learnedIp;
-            destPort = learnedPort;
-        }
-        else
-        {
-            send_reply(client_socket, FTPStatus::OK_150);
-        }
-
-        updateTransferState(session, true);
-        bool ok = dataChannel.sendFile(tempListing.string(), destIp, destPort);
-        updateTransferState(session, false);
-        std::error_code ec;
-        fs::remove(tempListing, ec);
-        send_reply(client_socket, ok ? FTPStatus::OK_226 : FTPStatus::ERR_426);
-        break;
-    }
-    case FtpCommand::STOU:
-    {
-        if (session.dataMode == DataConnMode::NONE || !dataChannel.isOpened())
-        {
-            send_reply(client_socket, FTPStatus::ERR_425);
-            break;
-        }
-
-        std::string ext = parsed.arg.empty() ? "" : fs::path(parsed.arg).extension().string();
-        auto nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-                         std::chrono::system_clock::now().time_since_epoch())
-                         .count();
-        std::string uniqueName = "upload_" + std::to_string(session.controlSocketFd) +
-                                 "_" + std::to_string(nowMs) + ext;
-
-        send_reply(client_socket, FTPStatus::OK_150);
-        updateTransferState(session, true);
-        bool ok = dataChannel.receiveFile();
-        updateTransferState(session, false);
-        if (!ok)
-        {
-            send_reply(client_socket, FTPStatus::ERR_426);
-            break;
-        }
-
-        const TransferSession &recvInfo = dataChannel.getReceiveTransferSession();
-        fs::path receivedPath = fs::path("server_files") / recvInfo.fileName;
-        auto dest = resolveVirtualPath(session, uniqueName);
-        if (!dest || !fs::exists(receivedPath))
-        {
-            send_reply(client_socket, FTPStatus::ERR_550);
-            break;
-        }
-
-        std::error_code ec;
-        fs::rename(receivedPath, *dest, ec);
-        if (ec)
-        {
-            send_reply(client_socket, FTPStatus::ERR_550);
-            break;
-        }
-
-        // Reply 226 kèm tên thật đã lưu -- client BẮT BUỘC phải đọc
-        send_reply(client_socket, "226 Transfer complete. Stored as \"" + uniqueName + "\".\r\n");
-        break;
-    }
-
-    case FtpCommand::APPE:
-    {
-        if (session.dataMode == DataConnMode::NONE || !dataChannel.isOpened())
-        {
-            send_reply(client_socket, FTPStatus::ERR_425);
-            break;
-        }
-        if (parsed.arg.empty())
-        {
-            send_reply(client_socket, FTPStatus::ERR_501);
-            break;
-        }
-
-        send_reply(client_socket, FTPStatus::OK_150);
-        updateTransferState(session, true);
-        bool ok = dataChannel.receiveFile();
-        updateTransferState(session, false);
-        if (!ok)
-        {
-            send_reply(client_socket, FTPStatus::ERR_426);
-            break;
-        }
-
-        const TransferSession &recvInfo = dataChannel.getReceiveTransferSession();
-        fs::path receivedPath = fs::path("server_files") / recvInfo.fileName;
-        auto dest = resolveVirtualPath(session, parsed.arg);
-        if (!dest || !fs::exists(receivedPath))
-        {
-            send_reply(client_socket, FTPStatus::ERR_550);
-            break;
-        }
-
-        if (fs::exists(*dest))
-        {
-            std::ifstream src(receivedPath, std::ios::binary);
-            std::ofstream dst(*dest, std::ios::binary | std::ios::app);
-            dst << src.rdbuf();
-            src.close();
-            dst.close();
-            std::error_code ec2;
-            fs::remove(receivedPath, ec2);
-        }
-        else
-        {
-            // File đích chưa tồn tại -> hành vi giống STOR bình thường.
-            std::error_code ec;
-            fs::rename(receivedPath, *dest, ec);
-            if (ec)
-            {
-                send_reply(client_socket, FTPStatus::ERR_550);
-                break;
-            }
-        }
-
-        send_reply(client_socket, FTPStatus::OK_226);
-        break;
-    }
-
-    case FtpCommand::MDTM:
-    {
-        auto target = resolveVirtualPath(session, parsed.arg);
-        if (!target || !fs::is_regular_file(*target))
-        {
-            send_reply(client_socket, FTPStatus::ERR_550);
-        }
-        else
-        {
-            // Lấy thời gian sửa đổi cuối của file
-            std::error_code ec;
-            auto ftime = fs::last_write_time(*target, ec);
-            if (ec)
-            {
-                send_reply(client_socket, FTPStatus::ERR_550);
-                break;
-            }
-
-            auto s_time = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
-                ftime - fs::file_time_type::clock::now() + std::chrono::system_clock::now());
-            std::time_t tt = std::chrono::system_clock::to_time_t(s_time);
-            std::tm *gmt = std::gmtime(&tt);
-
-            char timeBuf[30];
-            std::strftime(timeBuf, sizeof(timeBuf), "%Y%m%d%H%M%S", gmt);
-            send_reply(client_socket, "213 " + std::string(timeBuf) + "\r\n");
-        }
-        break;
-    }
-
-    case FtpCommand::MODE:
-    {
-        std::string t = parsed.arg;
-        for (auto &c : t)
-            c = toupper(c);
-
-        if (t == "S" || t.empty())
-        {
-            send_reply(client_socket, "200 Mode set to S.\r\n");
-        }
-        else
-        {
-            send_reply(client_socket, "504 Command not implemented for that parameter.\r\n");
-        }
-        break;
-    }
-
-    case FtpCommand::ABOR:
-        {
-            if (dataChannel.isOpened() && dataChannel.isBusy())
-            {
-                // RFC 959: gửi 426 trước để báo client transfer đang bị ngắt
-                // send_reply(client_socket, "426 Connection closed; transfer aborted.\r\n");
-
-                // Set cờ abort → SlidingWindowSender / FileReceiver thoát vòng lặp
-                dataChannel.abortTransfer();
-
-                // Đợi tối đa 2s để transfer thread nhận cờ và kết thúc
-                for (int i = 0; i < 40 && dataChannel.isBusy(); i++)
-                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-
-                if (dataChannel.isOpened())
-                {
-                    dataChannel.close();
-                    session.dataMode = DataConnMode::NONE;
-                    updateTransferState(session, false);
-                }
-
-                // RFC 959: gửi 226 sau để xác nhận ABOR thành công
-                send_reply(client_socket, "226 ABOR command successful.\r\n");
             }
             else
             {
-                if (dataChannel.isOpened())
-                {
-                    dataChannel.close();
-                    session.dataMode = DataConnMode::NONE;
-                }
-                send_reply(client_socket, "225 No transfer in progress.\r\n");
+                std::cout
+                    << "\n[CLIENT][ERROR] Download aborted "
+                       "or failed at UDP data layer.\n";
             }
-            break;
-        }
-    case FtpCommand::HELP:
+
+            dataChannel->close();
+
+            g_active_channel.store(
+                nullptr);
+
+            delete dataChannel;
+
+            std::cout
+                << "ftp> "
+                << std::flush;
+        })
+        .detach();
+}
+
+// ---------------------------------------------------------------------
+// doGetViaPasv(): giống doGet() nhưng dùng PASV thay vì PORT -- gửi 1 gói
+// SYN "chào hỏi" tới server ngay sau khi mở kênh dữ liệu, để server học
+// được địa chỉ client trước khi bắt đầu gửi.
+// ---------------------------------------------------------------------
+void doGetViaPasv(
+    SOCKET sock,
+    std::string &recv_buffer,
+    const std::string &remoteName,
+    std::string localPath,
+    TransferType type = TransferType::BINARY)
+{
+    fs::create_directories(
+        CLIENT_ROOT);
+
+    if (localPath.empty())
     {
-        send_reply(client_socket, buildHelpReply(parsed.arg));
-        break;
+        localPath =
+            (CLIENT_ROOT / remoteName)
+                .string();
+    }
+    else if (
+        !fs::exists(localPath) &&
+        fs::exists(
+            CLIENT_ROOT / localPath))
+    {
+        localPath =
+            (CLIENT_ROOT / localPath)
+                .string();
     }
 
-    case FtpCommand::HASH:
+    const std::string pasvReply =
+        sendCommandAndGetReply(
+            sock,
+            recv_buffer,
+            "PASV");
+
+    std::string serverIp;
+    int serverPort = 0;
+
+    if (pasvReply.rfind("227", 0) != 0 ||
+        !parsePasvResponse(
+            pasvReply,
+            serverIp,
+            serverPort))
     {
-        if (parsed.arg.empty())
-        {
-            send_reply(client_socket, FTPStatus::ERR_501);
-            break;
-        }
+        std::cout
+            << "[CLIENT][ERROR] PASV negotiation "
+               "failed; download cancelled.\n";
 
-        auto target = resolveVirtualPath(session, parsed.arg);
-        if (!target || !fs::is_regular_file(*target))
-        {
-            send_reply(client_socket, FTPStatus::ERR_550);
-            break;
-        }
-
-        const std::string digest = SHA256::hashFile(target->string());
-        if (digest.empty())
-        {
-            send_reply(client_socket, FTPStatus::ERR_550);
-            break;
-        }
-
-        send_reply(client_socket, "213 SHA256 " + digest + "\r\n");
-        break;
+        return;
     }
-    case FtpCommand::STAT:
-    {
-        if (parsed.arg.empty())
-        {
-            // 1. STAT không tham số: Trả về trạng thái Session hiện tại
-            std::string dataModeStr = "NONE";
-            if (session.dataMode == DataConnMode::PASSIVE)
-                dataModeStr = "PASSIVE";
-            else if (session.dataMode == DataConnMode::ACTIVE)
-                dataModeStr = "ACTIVE";
 
-            std::string statusMsg =
-                "211- Hybrid FTP Server Status:\r\n"
-                " Connected user: " +
-                (session.username.empty() ? "Anonymous" : session.username) + "\r\n"
-                                                                              " Current directory: " +
-                session.currentDir + "\r\n"
-                                     " Transfer Type: " +
-                (session.type == TransferType::ASCII ? "ASCII" : "BINARY") + "\r\n"
-                                                                             " Data Connection Mode: " +
-                dataModeStr + "\r\n"
-                              "211 End of status.\r\n";
-            send_reply(client_socket, statusMsg);
-        }
-        else
+    DataChannel *dataChannel =
+        new DataChannel();
+
+    DataChannelConfig cfg;
+
+    cfg.localPort = 0;
+    cfg.timeout = 3000;
+    cfg.maxRetry = 5;
+    cfg.useGBN = true;
+
+    if (!dataChannel->open(cfg))
+    {
+        std::cout
+            << "[CLIENT][ERROR] Cannot open local "
+               "UDP data channel.\n";
+
+        delete dataChannel;
+
+        return;
+    }
+
+    const std::string retrReply =
+        sendCommandAndGetReply(
+            sock,
+            recv_buffer,
+            "RETR " + remoteName);
+
+    if (retrReply.rfind("150", 0) != 0)
+    {
+        dataChannel->close();
+
+        delete dataChannel;
+
+        return;
+    }
+
+    // Passive download handshake.
+    dataChannel->sendHandshake(
+        serverIp,
+        static_cast<
+            unsigned short>(
+            serverPort));
+
+    g_active_channel.store(
+        dataChannel);
+
+    std::thread(
+        [
+            sock,
+            &recv_buffer,
+            dataChannel,
+            remoteName,
+            localPath,
+            type
+        ]()
         {
-            // 2. STAT có tham số: Xem thông tin file/thư mục qua Control Socket
-            auto target = resolveVirtualPath(session, parsed.arg);
-            if (!target || !fs::exists(*target))
+            log_info(
+                "Downloading (PASV) "
+                + remoteName
+                + " ...");
+
+            const bool ok =
+                dataChannel->receiveFile();
+
+            if (ok)
             {
-                send_reply(client_socket, FTPStatus::ERR_550);
-            }
-            else if (fs::is_regular_file(*target))
-            {
+                const TransferSession &recvInfo =
+                    dataChannel->
+                        getReceiveTransferSession();
+
+                const fs::path receivedPath =
+                    fs::path("server_files")
+                    / recvInfo.fileName;
+
                 std::error_code ec;
-                auto sz = fs::file_size(*target, ec);
-                std::string fileMsg =
-                    "213- File status for " + parsed.arg + ":\r\n"
-                                                           " Size: " +
-                    std::to_string(sz) + " bytes\r\n"
-                                         "213 End of status.\r\n";
-                send_reply(client_socket, fileMsg);
-            }
-            else if (fs::is_directory(*target))
-            {
-                std::string dirMsg = "212- Directory status for " + parsed.arg + ":\r\n";
-                for (auto &entry : fs::directory_iterator(*target))
-                {
-                    dirMsg += (entry.is_directory() ? "d " : "- ") + entry.path().filename().string() + "\r\n";
-                }
-                dirMsg += "212 End of status.\r\n";
-                send_reply(client_socket, dirMsg);
-            }
-        }
-        break;
-    }
 
-    default:
-    {
-        send_reply(client_socket, FTPStatus::ERR_500);
-        break;
-    }
-    }
-    break;
-    }
-}
+                if (type ==
+                    TransferType::ASCII)
+                {
+                    if (convertCRLFToLFInFile(
+                            receivedPath,
+                            localPath))
+                    {
+                        fs::remove(
+                            receivedPath,
+                            ec);
+
+                        std::cout
+                            << "\n[CLIENT][OK] Saved "
+                               "ASCII file: "
+                            << localPath
+                            << '\n';
+                    }
+                    else
+                    {
+                        if (fs::exists(
+                                localPath))
+                        {
+                            fs::remove(
+                                localPath,
+                                ec);
+                        }
+
+                        ec.clear();
+
+                        fs::rename(
+                            receivedPath,
+                            localPath,
+                            ec);
+
+                        if (ec)
+                        {
+                            std::cout
+                                << "\n[CLIENT][WARN] Download "
+                                   "completed, but file could "
+                                   "not be moved to: "
+                                << localPath
+                                << '\n';
+                        }
+                        else
+                        {
+                            std::cout
+                                << "\n[CLIENT][OK] Saved file: "
+                                << localPath
+                                << '\n';
+                        }
+                    }
+                }
+                else
+                {
+                    if (fs::exists(
+                            localPath))
+                    {
+                        fs::remove(
+                            localPath,
+                            ec);
+                    }
+
+                    ec.clear();
+
+                    fs::rename(
+                        receivedPath,
+                        localPath,
+                        ec);
+
+                    if (ec)
+                    {
+                        std::cout
+                            << "\n[CLIENT][WARN] Download "
+                               "completed, but file could "
+                               "not be moved to: "
+                            << localPath
+                            << '\n';
+                    }
+                    else
+                    {
+                        std::cout
+                            << "\n[CLIENT][OK] Saved file: "
+                            << localPath
+                            << '\n';
+                    }
+                }
+
+                std::string finalReply;
+
+                if (receive_reply(
+                        sock,
+                        recv_buffer,
+                        finalReply))
+                {
+                    std::cout
+                        << finalReply;
+
+                    if (finalReply.rfind(
+                            "226",
+                            0) == 0 &&
+                        fs::exists(
+                            localPath))
+                    {
+                        verifyEndToEndIntegrity(
+                            sock,
+                            recv_buffer,
+                            localPath,
+                            remoteName);
+                    }
+                }
+            }
+            else
+            {
+                std::cout
+                    << "\n[CLIENT][ERROR] Download aborted "
+                       "or failed at UDP data layer.\n";
+            }
+
+            dataChannel->close();
+
+            g_active_channel.store(
+                nullptr);
+
+            delete dataChannel;
+
+            std::cout
+                << "ftp> "
+                << std::flush;
+        })
+        .detach();
 }
 
 // ---------------------------------------------------------------------
-// handle_client_session(): TOÀN BỘ vòng đời phục vụ 1 client, từ lúc
-// vừa accept() xong tới lúc đóng kết nối. Hàm này sẽ được chạy trong
-// 1 std::thread RIÊNG cho mỗi client -> nhiều client chạy song song.
-// Nhận client_socket theo GIÁ TRỊ (không phải &) vì mỗi thread cần
-// bản sao độc lập của biến này, sống suốt đời thread đó.
+// doList(): LIST/NLST qua PASV. Chạy đồng bộ (không cần ABOR vì thư mục
+// thường nhỏ và nhanh).
 // ---------------------------------------------------------------------
-void handle_client_session(SOCKET client_socket, const std::string &clientIp)
+void doList(SOCKET sock, std::string &recv_buffer, const std::string &remoteDir, std::string cmdVerb = "LIST")
 {
-    log_info("New client connected from " + clientIp + "!");
-
-    // ClientSession khai báo LOCAL trong hàm chạy trên thread riêng
-    // -> mỗi thread có 1 session hoàn toàn độc lập, không đụng chạm
-    // tới session của thread khác => không cần mutex ở đây.
-    ClientSession session;
-    DataChannel dataChannel; // Kênh dữ liệu UDP RIÊNG của client này, mở khi PASV/PORT
-    session.controlSocketFd = static_cast<int>(client_socket);
-    session.sessionId = static_cast<int>(client_socket);
-    session.clientIp = clientIp;
-
-    g_sessionRegistry.addSession(session.sessionId, clientIp);
-    g_sessionRegistry.printSessions();
-
-    send_reply(client_socket, FTPStatus::OK_220);
-
-    std::string recv_buffer = "";
-    char buffer[BUFFER_SIZE];
-    bool is_quit = false;
-    while (!is_quit)
+    std::string pasvReply = sendCommandAndGetReply(sock, recv_buffer, "PASV");
+    std::string serverIp;
+    int serverPort;
+    if (pasvReply.rfind("227", 0) != 0 || !parsePasvResponse(pasvReply, serverIp, serverPort))
     {
-        int bytes_read = recv(client_socket, buffer, BUFFER_SIZE - 1, 0);
-        if (bytes_read <= 0)
-        {
-            log_info("Client disconnected.");
-            break;
-        }
-
-        buffer[bytes_read] = '\0';
-        recv_buffer.append(buffer, bytes_read);
-
-        size_t pos;
-        while ((pos = recv_buffer.find('\n')) != std::string::npos)
-        {
-            std::string command_line = recv_buffer.substr(0, pos);
-            recv_buffer.erase(0, pos + 1);
-            if (!command_line.empty() && command_line.back() == '\r')
-                command_line.pop_back();
-
-            if (!command_line.empty())
-            {
-                handle_client_command(client_socket, session, dataChannel, command_line);
-                if (command_line.rfind("QUIT", 0) == 0)
-                {
-                    is_quit = true;
-                    break;
-                }
-            }
-        }
+        std::cout << "[CLIENT][ERROR] PASV negotiation failed; directory listing cancelled.\n";
+        return;
     }
 
-    g_sessionRegistry.removeSession(session.sessionId);
-    g_sessionRegistry.printSessions();
+    DataChannel dataChannel;
+    DataChannelConfig cfg;
+    cfg.localPort = 0;
+    cfg.timeout = 3000;
+    cfg.maxRetry = 5;
+    cfg.useGBN = true;
+    if (!dataChannel.open(cfg))
+    {
+        std::cout << "[CLIENT][ERROR] Cannot open local UDP data channel.\n";
+        return;
+    }
 
-    SocketPlatform::close(client_socket);
-    log_info("Closed client connection from " + clientIp + ".");
+    std::string listCmd = cmdVerb + (remoteDir.empty() ? "" : (" " + remoteDir));
+    std::string to_send = listCmd + "\r\n";
+    send(sock, to_send.c_str(), to_send.length(), 0);
+    std::string listReply;
+    receive_reply(sock, recv_buffer, listReply);
+    std::cout << listReply;
+    if (listReply.rfind("150", 0) != 0)
+    {
+        dataChannel.close();
+        return;
+    }
+
+    dataChannel.sendHandshake(serverIp, static_cast<unsigned short>(serverPort));
+
+    bool ok = dataChannel.receiveFile();
+    if (!ok)
+    {
+        dataChannel.close();
+        std::cout << "[CLIENT][ERROR] " << cmdVerb << " failed at UDP data layer.\n";
+        return;
+    }
+
+    const TransferSession &recvInfo = dataChannel.getReceiveTransferSession();
+    fs::path receivedPath = fs::path("server_files") / recvInfo.fileName;
+    dataChannel.close();
+
+    std::ifstream f(receivedPath);
+    std::cout << "\n========== DIRECTORY LISTING ==========\n";
+    std::cout << f.rdbuf();
+    std::cout << "=======================================\n";
+    f.close();
+    std::error_code ec;
+    fs::remove(receivedPath, ec);
+
+    std::string finalReply;
+    if (receive_reply(sock, recv_buffer, finalReply))
+    {
+        std::cout << finalReply;
+    }
 }
 
-int main()
+int main(int argc, char *argv[])
 {
+    fs::create_directories("client_files");
     init_sockets();
 
-    if (!g_authenticationManager.loadUsers("config/users.txt"))
+    std::string server_ip;
+    if (argc >= 2)
     {
-        log_error("Cannot load config/users.txt. Server will stop.");
-        cleanup_sockets();
-        return 1;
+        server_ip = argv[1];
     }
+    else
+    {
+        std::cout << "Server IPv4 address (e.g. 127.0.0.1): ";
+        std::cin >> server_ip;
+        std::cin.ignore(); // Xóa ký tự newline thừa trong bộ đệm cin
+    }
+    int server_port = (argc >= 3) ? std::atoi(argv[2]) : 2121;
 
-    log_info("Starting Hybrid FTP Server on Port " + std::to_string(SERVER_PORT) + "...");
-
-    // Tạo thư mục gốc ảo trên đĩa nếu chưa có -- BẮT BUỘC phải chạy trước
-    // khi server bắt đầu nhận client, nếu không MKD/CWD/RETR... sẽ luôn
-    // thất bại vì thư mục cha (SERVER_ROOT) không tồn tại.
-    std::error_code root_ec;
-    fs::create_directories(SERVER_ROOT, root_ec);
-    log_info("Server root directory: " + SERVER_ROOT.string());
-
-    // BƯỚC 1: Tạo TCP Socket
-    SOCKET server_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_fd == INVALID_SOCKET)
+    SOCKET sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock == INVALID_SOCKET)
     {
         log_error("Socket creation failed.");
         cleanup_sockets();
         return 1;
     }
 
-    // Thiết lập tùy chọn cho phép dùng lại cổng nhanh (SO_REUSEADDR)
-    int opt = 1;
-    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, (const char *)&opt, sizeof(opt));
-
-    // BƯỚC 2: Cấu hình địa chỉ IP và Port
-    sockaddr_in address{};
-    address.sin_family = AF_INET;          // IPv4
-    address.sin_addr.s_addr = INADDR_ANY;  // Chấp nhận mọi IP
-    address.sin_port = htons(SERVER_PORT); // Cổng 2121
-
-    // BƯỚC 3: Gắn Socket vào Port (Bind)
-    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) == SOCKET_ERROR)
+    sockaddr_in server_addr{};
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(server_port);
+    if (inet_pton(AF_INET, server_ip.c_str(), &server_addr.sin_addr) <= 0)
     {
-        log_error("Bind failed. Port might be in use.");
-        SocketPlatform::close(server_fd);
+        log_error("Invalid server IP address: " + server_ip);
+        SocketPlatform::close(sock);
         cleanup_sockets();
         return 1;
     }
 
-    // BƯỚC 4: Lắng nghe kết nối (Listen)
-    if (listen(server_fd, 3) == SOCKET_ERROR)
+    log_info("Connecting to " + server_ip + ":" + std::to_string(server_port) + "...");
+    if (connect(sock, (struct sockaddr *)&server_addr, sizeof(server_addr)) == SOCKET_ERROR)
     {
-        log_error("Listen failed.");
-        SocketPlatform::close(server_fd);
+        log_error("Connection failed. Is the server running?");
+        SocketPlatform::close(sock);
         cleanup_sockets();
         return 1;
     }
+    log_info("Connected!");
 
-    log_info("Server is listening on port " + std::to_string(SERVER_PORT) + ". Waiting for connections...");
+    std::string recv_buffer;
 
-    // BƯỚC 5: Vòng lặp liên tục chấp nhận Client
+    std::string greeting;
+    if (receive_reply(sock, recv_buffer, greeting))
+    {
+        std::cout << greeting;
+    }
+
+    std::string input;
     while (true)
     {
-        sockaddr_in client_addr{};
-        SocketPlatform::Length addrlen = sizeof(client_addr);
+        std::cout << "ftp> ";
+        if (!std::getline(std::cin, input))
+            break;
+        if (input.empty())
+            continue;
 
-        // Chờ kết nối mới từ Client
-        SOCKET client_socket = accept(server_fd, reinterpret_cast<sockaddr*>(&client_addr), &addrlen);
-        if (client_socket == INVALID_SOCKET)
+        std::istringstream iss(input);
+        std::string verb;
+        iss >> verb;
+        std::string upperVerb = verb;
+        for (auto &c : upperVerb)
+            c = toupper(c);
+
+        if (g_active_channel.load() !=
+                nullptr &&
+            upperVerb != "ABOR")
         {
-            log_error("Accept connection failed.");
+            log_error(
+                "Transfer in progress. "
+                "Only ABOR is allowed.");
+
             continue;
         }
 
-        char clientIpBuffer[INET_ADDRSTRLEN] = {};
-        inet_ntop(AF_INET, &client_addr.sin_addr, clientIpBuffer, sizeof(clientIpBuffer));
-        const std::string clientIp = clientIpBuffer;
+        // ==========================================
+        // ABOR
+        // ==========================================
 
-        log_info("Accepted TCP client: " + clientIp);
+        if (upperVerb == "ABOR")
+        {
+            DataChannel *channel =
+                g_active_channel.load();
 
-        // One thread handles one independent FTP control session.
-        std::thread(handle_client_session, client_socket, clientIp).detach();
-    } // Kết thúc vòng lặp accept (Server tiếp tục chờ Client tiếp theo)
+            if (channel != nullptr)
+            {
+                const std::string command =
+                    "ABOR\r\n";
 
-    // Đóng Server socket khi dừng Server
-    SocketPlatform::close(server_fd);
+                send(
+                    sock,
+                    command.c_str(),
+                    command.length(),
+                    0);
+
+                // Cooperatively cancel
+                // current DataChannel.
+                channel->abortTransfer();
+
+                log_info(
+                    "Waiting for transfer "
+                    "thread to finish...");
+
+                for (
+                    int i = 0;
+                    i < 60 &&
+                    g_active_channel.load()
+                        != nullptr;
+                    i++)
+                {
+                    std::this_thread::
+                        sleep_for(
+                            std::chrono::
+                                milliseconds(
+                                    50));
+                }
+
+                if (g_active_channel.load()
+                    != nullptr)
+                {
+                    log_error(
+                        "Transfer thread did not "
+                        "finish in time.");
+                }
+
+                // ABOR active-transfer response:
+                // 426 followed by 226.
+                std::string reply1;
+                std::string reply2;
+
+                if (receive_reply(
+                        sock,
+                        recv_buffer,
+                        reply1))
+                {
+                    std::cout
+                        << reply1;
+                }
+
+                if (receive_reply(
+                        sock,
+                        recv_buffer,
+                        reply2))
+                {
+                    std::cout
+                        << reply2;
+                }
+
+                log_info(
+                    "ABOR complete.");
+            }
+            else
+            {
+                // Không có transfer vẫn gửi ABOR
+                // để server trả 225 đúng FTP behavior.
+                sendCommandAndGetReply(
+                    sock,
+                    recv_buffer,
+                    "ABOR");
+            }
+
+            continue;
+        }
+
+        // ==========================================
+        // PUT alias -> STOR
+        // ==========================================
+
+        if (upperVerb == "PUT")
+        {
+            std::string localPath;
+            std::string remoteName;
+
+            iss
+                >> localPath
+                >> remoteName;
+
+            if (localPath.empty())
+            {
+                std::cout
+                    << "[CLIENT][USAGE] PUT "
+                       "<local_file> [remote_name]\n";
+
+                continue;
+            }
+
+            doPut(
+                sock,
+                recv_buffer,
+                localPath,
+                remoteName,
+                "STOR",
+                currentType);
+
+            continue;
+        }
+
+        // ==========================================
+        // LS alias
+        // ==========================================
+
+        if (upperVerb == "LS")
+        {
+            std::string dir;
+
+            iss >> dir;
+
+            doList(
+                sock,
+                recv_buffer,
+                dir);
+
+            continue;
+        }
+
+        // ==========================================
+        // GET active
+        // ==========================================
+
+        if (upperVerb == "GET")
+        {
+            std::string remoteName;
+            std::string localPath;
+
+            iss
+                >> remoteName
+                >> localPath;
+
+            if (remoteName.empty())
+            {
+                std::cout
+                    << "[CLIENT][USAGE] GET "
+                       "<remote_file> [local_name]\n";
+
+                continue;
+            }
+
+            doGet(
+                sock,
+                recv_buffer,
+                remoteName,
+                localPath,
+                currentType);
+
+            continue;
+        }
+
+        // ==========================================
+        // GETP passive
+        // ==========================================
+
+        if (upperVerb == "GETP")
+        {
+            std::string remoteName;
+            std::string localPath;
+
+            iss
+                >> remoteName
+                >> localPath;
+
+            if (remoteName.empty())
+            {
+                std::cout
+                    << "[CLIENT][USAGE] GETP "
+                       "<remote_file> [local_name]\n";
+
+                continue;
+            }
+
+            doGetViaPasv(
+                sock,
+                recv_buffer,
+                remoteName,
+                localPath,
+                currentType);
+
+            continue;
+        }
+
+        // ==========================================
+        // PASV
+        // ==========================================
+
+        if (upperVerb == "PASV")
+        {
+            const std::string reply =
+                sendCommandAndGetReply(
+                    sock,
+                    recv_buffer,
+                    "PASV");
+
+            if (reply.rfind("227", 0) == 0 &&
+                parsePasvResponse(
+                    reply,
+                    pasvIp,
+                    pasvPort))
+            {
+                currentMode =
+                    Mode::PASSIVE;
+            }
+
+            continue;
+        }
+
+        // ==========================================
+        // TYPE A / TYPE I
+        // ==========================================
+
+        if (upperVerb == "TYPE")
+        {
+            std::string arg;
+
+            iss >> arg;
+
+            std::string upperArg =
+                arg;
+
+            for (char &character :
+                 upperArg)
+            {
+                character =
+                    static_cast<char>(
+                        std::toupper(
+                            static_cast<
+                                unsigned char>(
+                                character)));
+            }
+
+            if (upperArg != "A" &&
+                upperArg != "I")
+            {
+                std::cout
+                    << "[CLIENT][USAGE] TYPE A | TYPE I\n";
+
+                continue;
+            }
+
+            const std::string reply =
+                sendCommandAndGetReply(
+                    sock,
+                    recv_buffer,
+                    "TYPE " + upperArg);
+
+            // sendCommandAndGetReply()
+            // đã in reply rồi.
+            if (reply.rfind("200", 0)
+                == 0)
+            {
+                currentType =
+                    (upperArg == "A")
+                        ? TransferType::ASCII
+                        : TransferType::BINARY;
+            }
+
+            continue;
+        }
+
+        // ==========================================
+        // RETR
+        // ==========================================
+
+        if (upperVerb == "RETR")
+        {
+            std::string arg;
+
+            iss >> arg;
+
+            if (arg.empty())
+            {
+                std::cout
+                    << "[CLIENT][USAGE] RETR "
+                       "<remote_file>\n";
+
+                continue;
+            }
+
+            if (currentMode ==
+                Mode::PASSIVE)
+            {
+                doGetViaPasv(
+                    sock,
+                    recv_buffer,
+                    arg,
+                    "",
+                    currentType);
+            }
+            else
+            {
+                doGet(
+                    sock,
+                    recv_buffer,
+                    arg,
+                    "",
+                    currentType);
+            }
+
+            currentMode =
+                Mode::NONE;
+
+            continue;
+        }
+
+        // ==========================================
+        // LIST / NLST
+        // ==========================================
+
+        if (upperVerb == "LIST" ||
+            upperVerb == "NLST")
+        {
+            std::string arg;
+
+            iss >> arg;
+
+            doList(
+                sock,
+                recv_buffer,
+                arg,
+                upperVerb);
+
+            currentMode =
+                Mode::NONE;
+
+            continue;
+        }
+
+        // ==========================================
+        // STOU
+        //
+        // FTP command gửi lên server không có
+        // remote argument.
+        //
+        // Client vẫn cần local file để upload,
+        // nên nếu user chỉ nhập "STOU", client
+        // hỏi local filename riêng.
+        // ==========================================
+
+        if (upperVerb == "STOU")
+        {
+            std::string localPath;
+
+            iss >> localPath;
+
+            if (localPath.empty())
+            {
+                std::cout
+                    << "Local file for STOU: "
+                    << std::flush;
+
+                std::getline(
+                    std::cin,
+                    localPath);
+            }
+
+            if (localPath.empty())
+            {
+                std::cout
+                    << "[CLIENT][ERROR] No local file "
+                       "specified for STOU.\n";
+
+                continue;
+            }
+
+            doPut(
+                sock,
+                recv_buffer,
+                localPath,
+                "",
+                "STOU",
+                currentType);
+
+            currentMode =
+                Mode::NONE;
+
+            continue;
+        }
+
+        // ==========================================
+        // STOR / APPE
+        // ==========================================
+
+        if (upperVerb == "STOR" ||
+            upperVerb == "APPE")
+        {
+            std::string localPath;
+
+            iss >> localPath;
+
+            if (localPath.empty())
+            {
+                std::cout
+                    << "[CLIENT][USAGE] "
+                    << upperVerb
+                    << " <local_file>\n";
+
+                continue;
+            }
+
+            doPut(
+                sock,
+                recv_buffer,
+                localPath,
+                "",
+                upperVerb,
+                currentType);
+
+            currentMode =
+                Mode::NONE;
+
+            continue;
+        }
+        std::string to_send = input + "\r\n";
+        if (send(sock, to_send.c_str(), to_send.length(), 0) == SOCKET_ERROR)
+        {
+            log_error("Failed to send command. Connection may be lost.");
+            break;
+        }
+
+        std::string reply;
+        if (!receive_reply(sock, recv_buffer, reply))
+        {
+            log_error("Server closed the connection");
+            break;
+        }
+        std::cout << reply;
+
+        if (upperVerb == "QUIT")
+            break;
+
+    }
+    SocketPlatform::close(sock);
     cleanup_sockets();
+
     return 0;
 }

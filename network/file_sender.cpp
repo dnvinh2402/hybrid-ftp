@@ -101,11 +101,6 @@ void printProgress(
         << std::flush;
 }
 
-// ============================================================
-// Keep the 10% update threshold from your implementation,
-// while reusing the leader's richer progress bar.
-// ============================================================
-
 void printSendProgress(
     std::uint64_t bytesTransferred,
     std::uint64_t totalBytes,
@@ -268,7 +263,7 @@ bool FileSender::sendFile(
             : "Stop-and-Wait";
 
     log_info(
-        "--------------------------------");
+        "================================");
 
     log_info(
         "Transfer Start ("
@@ -293,7 +288,7 @@ bool FileSender::sendFile(
             receiverPort));
 
     log_info(
-        "--------------------------------");
+        "================================");
 
     const auto startTime =
         Clock::now();
@@ -606,7 +601,7 @@ void FileSender::printSummary(
             : "Stop-and-Wait";
 
     log_info(
-        "--------------------------------");
+        "================================");
 
     log_info(
         "Transfer Summary");
@@ -650,7 +645,7 @@ void FileSender::printSummary(
                 : "No"));
 
     log_info(
-        "--------------------------------");
+        "================================");
 }
 
 const TransferSession &
