@@ -5,9 +5,11 @@
 #include <optional>
 #include <random>
 #include <thread>
+#include <chrono>
 #include <vector>
 #include <sstream>
 #include <fstream>
+#include <atomic>
 #include "../common/logger.h"
 #include "../common/protocol.h"
 #include "../network/data_channel.h"
@@ -58,11 +60,13 @@ enum class Mode
     PASSIVE
 };
 Mode currentMode = Mode::NONE;
+std::atomic<bool> is_transferring(false);
 TransferType currentType = TransferType::ASCII;
 
 std::string pasvIp;
 int pasvPort = 0;
 int activePort = 0;
+std::atomic<DataChannel*> g_active_channel{nullptr};
 
 // receive_reply(): đọc ĐÚNG 1 dòng reply hoàn chỉnh từ server, dùng buffer
 // tích lũy sống suốt phiên (truyền theo tham chiếu). Sửa lại so với bản
@@ -232,14 +236,54 @@ std::string formatPortArg(const std::string &ip, int port)
            std::to_string(h4) + "," + std::to_string(p1) + "," + std::to_string(p2);
 }
 
-void doPut(SOCKET sock, std::string &recv_buffer, std::string &localPath, std::string remoteName, std::string cmdVerb = "STOR")
-{
-    if (!fs::exists(localPath) && fs::exists(CLIENT_ROOT / localPath))
-    {
-        localPath = (CLIENT_ROOT / localPath).string();
-    }
-    if (!fs::exists(localPath) || !fs::is_regular_file(localPath))
-    {
+// void doPut(SOCKET sock, std::string& recv_buffer, const std::string& localPath, std::string remoteName, std::string cmdVerb = "STOR") {
+//     if (!fs::exists(localPath) || !fs::is_regular_file(localPath)) {
+//         std::cout << "Local file not found: " << localPath << std::endl;
+//         return;
+//     }
+//     if (remoteName.empty()) remoteName = fs::path(localPath).filename().string();
+
+//     std::string pasvReply = sendCommandAndGetReply(sock, recv_buffer, "PASV");
+//     std::string serverIp; int serverPort;
+//     if (pasvReply.rfind("227", 0) != 0 || !parsePasvResponse(pasvReply, serverIp, serverPort)) {
+//         std::cout << "PASV failed, cannot upload." << std::endl;
+//         return;
+//     }
+
+//     DataChannel dataChannel;
+//     DataChannelConfig cfg;
+//     cfg.localPort = 0;
+//     cfg.timeout   = 5000; // 5 s -- bằng với timeout phía server để tránh lệch
+//     cfg.maxRetry  = 5;
+//     cfg.useGBN  = true; 
+//     if (!dataChannel.open(cfg)) {
+//         std::cout << "Cannot open local UDP data channel." << std::endl;
+//         return;
+//     }
+
+//     // Gửi đúng câu lệnh STOR / STOU / APPE tùy thuộc vào yêu cầu
+//     std::string storReply = sendCommandAndGetReply(sock, recv_buffer, cmdVerb + " " + remoteName);
+//     if (storReply.rfind("150", 0) != 0) {
+//         dataChannel.close();
+//         return;
+//     }
+
+//     log_info("Uploading (" + cmdVerb + ") " + localPath + " -> " + remoteName + " ...");
+//     bool ok = dataChannel.sendFile(localPath, serverIp, static_cast<unsigned short>(serverPort));
+//     dataChannel.close();
+
+//     if (!ok) {
+//         std::cout << "Upload failed at UDP layer." << std::endl;
+//         return;
+//     }
+
+//     std::string finalReply;
+//     if (receive_reply(sock, recv_buffer, finalReply)) {
+//         std::cout << finalReply << std::endl;
+//     }
+// }
+void doPut(SOCKET sock, std::string& recv_buffer, const std::string& localPath, std::string remoteName, std::string cmdVerb = "STOR") {
+    if (!fs::exists(localPath) || !fs::is_regular_file(localPath)) {
         std::cout << "Local file not found: " << localPath << std::endl;
         return;
     }
@@ -255,56 +299,137 @@ void doPut(SOCKET sock, std::string &recv_buffer, std::string &localPath, std::s
         return;
     }
 
-    DataChannel dataChannel;
+    // 1. Chuyển sang cấp phát động DataChannel* tương tự như doGetViaPasv
+    DataChannel* dataChannel = new DataChannel();
     DataChannelConfig cfg;
     cfg.localPort = 0;
-    cfg.timeout = 2000;
-    cfg.maxRetry = 5;
-    if (!dataChannel.open(cfg))
-    {
+    cfg.timeout   = 5000; 
+    cfg.maxRetry  = 5;
+    cfg.useGBN  = true; 
+    
+    if (!dataChannel->open(cfg)) {
         std::cout << "Cannot open local UDP data channel." << std::endl;
+        delete dataChannel;
         return;
     }
 
-    // Gửi đúng câu lệnh STOR / STOU / APPE tùy thuộc vào yêu cầu
+    // Gửi lệnh STOR / STOU / APPE
     std::string storReply = sendCommandAndGetReply(sock, recv_buffer, cmdVerb + " " + remoteName);
-    if (storReply.rfind("150", 0) != 0)
-    {
-        dataChannel.close();
+    if (storReply.rfind("150", 0) != 0) {
+        dataChannel->close();
+        delete dataChannel;
         return;
     }
 
-    log_info("Uploading (" + cmdVerb + ") " + localPath + " -> " + remoteName + " ...");
-    bool ok = dataChannel.sendFile(localPath, serverIp, static_cast<unsigned short>(serverPort));
-    dataChannel.close();
+    // 2. Gán vào biến toàn cục quản lý kênh đang hoạt động
+    g_active_channel.store(dataChannel);
 
-    if (!ok)
-    {
-        std::cout << "Upload failed at UDP layer." << std::endl;
-        return;
-    }
+    // 3. Tách luồng (detach) để luồng main được giải phóng, sẵn sàng nhận lệnh ABOR
+    std::thread([sock, &recv_buffer, dataChannel, localPath, serverIp, serverPort, cmdVerb]() {
+        log_info("Uploading (" + cmdVerb + ") " + localPath + " ...");
+        
+        bool ok = dataChannel->sendFile(localPath, serverIp, static_cast<unsigned short>(serverPort));
 
-    std::string finalReply;
-
-    if (receive_reply(sock, recv_buffer, finalReply))
-    {
-        std::cout << finalReply << std::endl;
-
-        // Chỉ kiểm tra tự động cho STOR.
-        // Với APPE, file trên server còn chứa dữ liệu cũ.
-        // Với STOU, tên file thật do server tạo ra.
-        if (finalReply.rfind("226", 0) == 0 &&
-            cmdVerb == "STOR")
-        {
-            verifyEndToEndIntegrity(sock, recv_buffer, localPath, remoteName);
+        if (!ok) {
+            std::cout << "\nUpload failed at UDP layer (hoặc bị hủy bởi ABOR)." << std::endl;
+        } else {
+            std::cout << "\nUpload completed successfully." << std::endl;
         }
-    }
+
+        // Dọn dẹp tài nguyên động
+        dataChannel->close();
+        delete dataChannel;
+        g_active_channel.store(nullptr); // thread-safe reset
+
+        // Chỉ đọc reply khi transfer THÀNH CÔNG (không bị ABOR)
+        // Khi bị abort: ABOR handler ở main thread sẽ đọc reply (426 + 226)
+        if (ok) {
+            std::string finalReply;
+            if (receive_reply(sock, recv_buffer, finalReply)) {
+                std::cout << finalReply << std::endl;
+            }
+        }
+
+        // Đọc vét bộ đệm nếu server trả về thêm mã lỗi hủy (426)
+        if (!ok) {
+            std::string aborReply;
+            if (receive_reply(sock, recv_buffer, aborReply)) {
+                std::cout << aborReply << std::endl;
+            }
+        }
+
+        // Trả lại dấu nhắc lệnh ftp> cho màn hình console
+        std::cout << "ftp> " << std::flush;
+
+    }).detach();
 }
-void doGet(SOCKET sock, std::string &recv_buffer, const std::string &remoteName, std::string localPath)
-{
-    fs::create_directories(CLIENT_ROOT);
-    if (localPath.empty())
-    {
+// void doGet(SOCKET sock, std::string& recv_buffer, const std::string& remoteName, std::string localPath) {
+//     if (localPath.empty()) {
+//         fs::create_directories("client");
+//         localPath = (fs::path("client") / remoteName).string();
+//     }
+
+//     static std::mt19937 rng(std::random_device{}());
+//     static std::uniform_int_distribution<int> distPort(40000, 41000);
+//     int myPort = distPort(rng);
+//     std::string myIp = getLocalIp(sock);
+
+//     DataChannel dataChannel;
+//     DataChannelConfig cfg;
+//     cfg.localPort = static_cast<unsigned short>(myPort);
+//     cfg.timeout = 3000;
+//     cfg.maxRetry = 5;
+//     cfg.useGBN  = true;
+//     if (!dataChannel.open(cfg)) {
+//         std::cout << "Cannot bind local UDP port " << myPort << " for download." << std::endl;
+//         return;
+//     }
+
+//     std::string portReply = sendCommandAndGetReply(sock, recv_buffer, "PORT " + formatPortArg(myIp, myPort));
+//     if (portReply.rfind("200", 0) != 0) {
+//         dataChannel.close();
+//         return;
+//     }
+
+//     std::string retrReply = sendCommandAndGetReply(sock, recv_buffer, "RETR " + remoteName);
+//     if (retrReply.rfind("150", 0) != 0) {
+//         dataChannel.close();
+//         return;
+//     }
+
+//     log_info("Downloading " + remoteName + " ...");
+//     bool ok = dataChannel.receiveFile();
+
+//     if (!ok) {
+//         dataChannel.close();
+//         std::cout << "Download failed at UDP layer (xem log RDT phia tren)." << std::endl;
+//         return;
+//     }
+
+//     // PHẢI lấy thông tin session (tên file đã nhận) TRƯỚC khi close(),
+//     // vì close() sẽ delete đối tượng FileReceiver bên trong -- gọi
+//     // getReceiveTransferSession() SAU close() là truy cập con trỏ đã bị
+//     // xóa (dangling pointer), gây lỗi Segmentation fault.
+//     const TransferSession& recvInfo = dataChannel.getReceiveTransferSession();
+//     fs::path receivedPath = fs::path("server_files") / recvInfo.fileName;
+
+//     dataChannel.close();
+//     std::error_code ec;
+//     fs::rename(receivedPath, localPath, ec);
+//     if (ec) {
+//         std::cout << "Downloaded but could not move to " << localPath
+//                   << " (con o " << receivedPath.string() << ")" << std::endl;
+//     } else {
+//         std::cout << "Saved to " << localPath << std::endl;
+//     }
+
+//     std::string finalReply;
+//     if (receive_reply(sock, recv_buffer, finalReply)) {
+//         std::cout << finalReply << std::endl;
+//     }
+// }
+void doGet(SOCKET sock, std::string& recv_buffer, const std::string& remoteName, std::string localPath) {
+    if (localPath.empty()) {
         fs::create_directories("client");
         localPath = (fs::path("client") / remoteName).string();
     }
@@ -314,85 +439,151 @@ void doGet(SOCKET sock, std::string &recv_buffer, const std::string &remoteName,
     int myPort = distPort(rng);
     std::string myIp = getLocalIp(sock);
 
-    DataChannel dataChannel;
+    // 1. Chuyển sang cấp phát động DataChannel*
+    DataChannel* dataChannel = new DataChannel();
     DataChannelConfig cfg;
     cfg.localPort = static_cast<unsigned short>(myPort);
     cfg.timeout = 3000;
     cfg.maxRetry = 5;
-    if (!dataChannel.open(cfg))
-    {
-        std::cout << "Cannot bind local UDP port " << myPort << " for download." << std::endl;
+    cfg.useGBN  = true;
+    
+    if (!dataChannel->open(cfg)) {
+        std::cout << "Cannot open local UDP port " << myPort << " for download." << std::endl;
+        delete dataChannel;
         return;
     }
 
     std::string portReply = sendCommandAndGetReply(sock, recv_buffer, "PORT " + formatPortArg(myIp, myPort));
-    if (portReply.rfind("200", 0) != 0)
-    {
-        dataChannel.close();
+    if (portReply.rfind("200", 0) != 0) {
+        dataChannel->close();
+        delete dataChannel;
         return;
     }
 
     std::string retrReply = sendCommandAndGetReply(sock, recv_buffer, "RETR " + remoteName);
-    if (retrReply.rfind("150", 0) != 0)
-    {
-        dataChannel.close();
+    if (retrReply.rfind("150", 0) != 0) {
+        dataChannel->close();
+        delete dataChannel;
         return;
     }
 
-    log_info("Downloading " + remoteName + " ...");
-    bool ok = dataChannel.receiveFile();
+    // 2. Gán vào con trỏ toàn cục để kích hoạt cơ chế ABOR
+    g_active_channel.store(dataChannel);
 
-    if (!ok)
-    {
-        dataChannel.close();
-        std::cout << "Download failed at UDP layer (xem log RDT phia tren)." << std::endl;
-        return;
-    }
+    // 3. Tách luồng (detach) để giải phóng luồng chính
+    std::thread([sock, &recv_buffer, dataChannel, remoteName, localPath]() {
+        log_info("Downloading " + remoteName + " ...");
+        
+        bool ok = dataChannel->receiveFile();
 
-    // PHẢI lấy thông tin session (tên file đã nhận) TRƯỚC khi close(),
-    // vì close() sẽ delete đối tượng FileReceiver bên trong -- gọi
-    // getReceiveTransferSession() SAU close() là truy cập con trỏ đã bị
-    // xóa (dangling pointer), gây lỗi Segmentation fault.
-    const TransferSession &recvInfo = dataChannel.getReceiveTransferSession();
-    fs::path receivedPath = fs::path("server_files") / recvInfo.fileName;
-
-    dataChannel.close();
-    std::error_code ec;
-    fs::rename(receivedPath, localPath, ec);
-    if (ec)
-    {
-        std::cout << "Downloaded but could not move to " << localPath
-                  << " (con o " << receivedPath.string() << ")" << std::endl;
-    }
-    else
-    {
-        std::cout << "Saved to " << localPath << std::endl;
-    }
-
-    std::string finalReply;
-
-    if (receive_reply(sock, recv_buffer, finalReply))
-    {
-        std::cout << finalReply << std::endl;
-
-        if (finalReply.rfind("226", 0) == 0 &&
-            fs::exists(localPath))
-        {
-            verifyEndToEndIntegrity(sock, recv_buffer, localPath, remoteName);
+        if (!ok) {
+            std::cout << "\nDownload failed at UDP layer (hoặc bị hủy bởi ABOR)." << std::endl;
+        } else {
+            const TransferSession& recvInfo = dataChannel->getReceiveTransferSession();
+            fs::path receivedPath = fs::path("server_files") / recvInfo.fileName;
+            
+            std::error_code ec;
+            fs::rename(receivedPath, localPath, ec);
+            if (ec) {
+                std::cout << "\nDownloaded but could not move to " << localPath << std::endl;
+            } else {
+                std::cout << "\nSaved to " << localPath << std::endl;
+            }
         }
-    }
-}
 
+        // Dọn dẹp tài nguyên
+        dataChannel->close();
+        delete dataChannel;
+        g_active_channel.store(nullptr); // thread-safe reset
+
+        // Chỉ đọc reply khi transfer THÀNH CÔNG (không bị ABOR)
+        // Khi bị abort: ABOR handler ở main thread sẽ đọc reply (426 + 226)
+        if (ok) {
+            std::string finalReply;
+            if (receive_reply(sock, recv_buffer, finalReply)) {
+                std::cout << finalReply << std::endl;
+            }
+        }
+
+        // Trả lại dấu nhắc lệnh cho CLI
+        std::cout << "ftp> " << std::flush;
+
+    }).detach();
+}
 // ---------------------------------------------------------------------
 // doGetViaPasv(): giống doGet() nhưng dùng PASV thay vì PORT -- gửi 1 gói
 // SYN "chào hỏi" tới server ngay sau khi mở kênh dữ liệu, để server học
 // được địa chỉ client trước khi bắt đầu gửi (khớp receiveHandshake() mới
 // thêm ở server).
 // ---------------------------------------------------------------------
-void doGetViaPasv(SOCKET sock, std::string &recv_buffer, const std::string &remoteName, std::string localPath)
-{
-    if (localPath.empty())
-    { // SỬA ĐOẠN NÀY: Nếu localPath trống, tự gán đường dẫn vào thư mục "client/"
+// void doGetViaPasv(SOCKET sock, std::string& recv_buffer, const std::string& remoteName, std::string localPath) {
+//     if (localPath.empty()) { // SỬA ĐOẠN NÀY: Nếu localPath trống, tự gán đường dẫn vào thư mục "client/"
+//         fs::create_directories("client");
+//         localPath = (fs::path("client") / remoteName).string();
+//     }
+
+//     std::string pasvReply = sendCommandAndGetReply(sock, recv_buffer, "PASV");
+//     std::string serverIp; int serverPort;
+//     if (pasvReply.rfind("227", 0) != 0 || !parsePasvResponse(pasvReply, serverIp, serverPort)) {
+//         std::cout << "PASV failed, cannot download." << std::endl;
+//         return;
+//     }
+
+//     DataChannel dataChannel;
+//     DataChannelConfig cfg;
+//     cfg.localPort = 0;
+//     cfg.timeout = 3000;
+//     cfg.maxRetry = 5;
+//     cfg.useGBN  = true;
+//     if (!dataChannel.open(cfg)) {
+//         std::cout << "Cannot open local UDP data channel." << std::endl;
+//         return;
+//     }
+
+//     std::string to_send = "RETR " + remoteName + "\r\n";
+//     send(sock, to_send.c_str(), to_send.length(), 0);
+//     std::string retrReply;
+//     receive_reply(sock, recv_buffer, retrReply);
+//     std::cout << retrReply << std::endl;
+//     if (retrReply.rfind("150", 0) != 0) {
+//         dataChannel.close();
+//         return;
+//     }
+
+//     // Gửi gói SYN "chào hỏi" tới server NGAY SAU KHI server đã trả 150 --
+//     // server đang chờ đúng gói này trong receiveHandshake() để học địa
+//     // chỉ client trước khi bắt đầu gửi file thật.
+//     dataChannel.sendHandshake(serverIp, static_cast<unsigned short>(serverPort));
+
+//     log_info("Downloading (PASV) " + remoteName + " ...");
+//     bool ok = dataChannel.receiveFile();
+
+//     if (!ok) {
+//         dataChannel.close();
+//         std::cout << "Download failed at UDP layer (xem log RDT phia tren)." << std::endl;
+//         return;
+//     }
+
+//     const TransferSession& recvInfo = dataChannel.getReceiveTransferSession();
+//     fs::path receivedPath = fs::path("server_files") / recvInfo.fileName;
+//     dataChannel.close();
+
+//     std::error_code ec;
+//     fs::rename(receivedPath, localPath, ec);
+//     if (ec) {
+//         std::cout << "Downloaded but could not move to " << localPath << std::endl;
+//     } else {
+//         std::cout << "Saved to " << localPath << std::endl;
+//     }
+
+//     std::string finalReply;
+//     if (receive_reply(sock, recv_buffer, finalReply)) {
+//         std::cout << finalReply << std::endl;
+//     }
+// }
+
+void doGetViaPasv(SOCKET sock, std::string& recv_buffer, const std::string& remoteName, std::string localPath) {
+    if (localPath.empty()) { 
         fs::create_directories("client");
         localPath = (fs::path("client") / remoteName).string();
     }
@@ -406,14 +597,18 @@ void doGetViaPasv(SOCKET sock, std::string &recv_buffer, const std::string &remo
         return;
     }
 
-    DataChannel dataChannel;
+    // 1. CHỈNH SỬA: Dùng cấp phát động thay vì cấp phát trên stack
+    DataChannel* dataChannel = new DataChannel();
     DataChannelConfig cfg;
     cfg.localPort = 0;
     cfg.timeout = 3000;
     cfg.maxRetry = 5;
-    if (!dataChannel.open(cfg))
-    {
+    cfg.useGBN  = true;
+    
+    // Thay dấu chấm (.) bằng mũi tên (->)
+    if (!dataChannel->open(cfg)) {
         std::cout << "Cannot open local UDP data channel." << std::endl;
+        delete dataChannel;
         return;
     }
 
@@ -422,58 +617,65 @@ void doGetViaPasv(SOCKET sock, std::string &recv_buffer, const std::string &remo
     std::string retrReply;
     receive_reply(sock, recv_buffer, retrReply);
     std::cout << retrReply << std::endl;
-    if (retrReply.rfind("150", 0) != 0)
-    {
-        dataChannel.close();
+    if (retrReply.rfind("150", 0) != 0) {
+        dataChannel->close();
+        delete dataChannel;
         return;
     }
 
-    // Gửi gói SYN "chào hỏi" tới server NGAY SAU KHI server đã trả 150 --
-    // server đang chờ đúng gói này trong receiveHandshake() để học địa
-    // chỉ client trước khi bắt đầu gửi file thật.
-    dataChannel.sendHandshake(serverIp, static_cast<unsigned short>(serverPort));
+    dataChannel->sendHandshake(serverIp, static_cast<unsigned short>(serverPort));
 
-    log_info("Downloading (PASV) " + remoteName + " ...");
-    bool ok = dataChannel.receiveFile();
+    // 2. CHỈNH SỬA: Gán vào biến toàn cục và tách luồng từ đoạn này trở đi
+    g_active_channel.store(dataChannel);
 
-    if (!ok)
-    {
-        dataChannel.close();
-        std::cout << "Download failed at UDP layer (xem log RDT phia tren)." << std::endl;
-        return;
-    }
+    std::thread([sock, &recv_buffer, dataChannel, remoteName, localPath]() {
+        log_info("Downloading (PASV) " + remoteName + " ...");
+        
+        // Quá trình này sẽ block bên trong luồng phụ, luồng main vẫn rảnh tay
+        bool ok = dataChannel->receiveFile();
 
-    const TransferSession &recvInfo = dataChannel.getReceiveTransferSession();
-    fs::path receivedPath = fs::path("server_files") / recvInfo.fileName;
-    dataChannel.close();
-
-    std::error_code ec;
-    fs::rename(receivedPath, localPath, ec);
-    if (ec)
-    {
-        std::cout << "Downloaded but could not move to " << localPath << std::endl;
-    }
-    else
-    {
-        std::cout << "Saved to " << localPath << std::endl;
-    }
-
-    std::string finalReply;
-
-    if (receive_reply(sock, recv_buffer, finalReply))
-    {
-        std::cout << finalReply << std::endl;
-
-        if (finalReply.rfind("226", 0) == 0 &&
-            fs::exists(localPath))
-        {
-            verifyEndToEndIntegrity(sock, recv_buffer, localPath, remoteName);
+        if (!ok) {
+            std::cout << "Download failed at UDP layer (xem log RDT phia tren)." << std::endl;
+        } else {
+            const TransferSession& recvInfo = dataChannel->getReceiveTransferSession();
+            fs::path receivedPath = fs::path("server_files") / recvInfo.fileName;
+            
+            std::error_code ec;
+            fs::rename(receivedPath, localPath, ec);
+            if (ec) {
+                std::cout << "\nDownloaded but could not move to " << localPath << std::endl;
+            } else {
+                std::cout << "\nSaved to " << localPath << std::endl;
+            }
         }
-    }
+
+        // Dọn dẹp tài nguyên động
+        dataChannel->close();
+        delete dataChannel;
+        g_active_channel.store(nullptr); // Reset cờ
+
+        // Đọc phản hồi cuối từ server (ví dụ 226 Transfer Complete)
+        std::string finalReply;
+        if (receive_reply(sock, recv_buffer, finalReply)) {
+            std::cout << finalReply << std::endl;
+        }
+
+        // Nếu nhận file thất bại do gõ ABOR, server có thể trả về cả mã 426 và 226, 
+        // gọi receive_reply thêm lần nữa để làm sạch buffer.
+        if (!ok) {
+            std::string aborReply;
+            if (receive_reply(sock, recv_buffer, aborReply)) {
+                std::cout << aborReply << std::endl;
+            }
+        }
+
+        // In lại dấu nhắc lệnh do bị đè chữ
+        std::cout << "ftp> " << std::flush;
+        
+    }).detach(); // Quan trọng: detach để luồng chạy tự do
 }
 
-void doList(SOCKET sock, std::string &recv_buffer, const std::string &remoteDir, std::string cmdVerb = "LIST")
-{
+void doList(SOCKET sock, std::string& recv_buffer, const std::string& remoteDir, std::string cmdVerb = "LIST") {
     std::string pasvReply = sendCommandAndGetReply(sock, recv_buffer, "PASV");
     std::string serverIp;
     int serverPort;
@@ -488,8 +690,8 @@ void doList(SOCKET sock, std::string &recv_buffer, const std::string &remoteDir,
     cfg.localPort = 0;
     cfg.timeout = 3000;
     cfg.maxRetry = 5;
-    if (!dataChannel.open(cfg))
-    {
+    cfg.useGBN  = true;
+    if (!dataChannel.open(cfg)) {
         std::cout << "Cannot open local UDP data channel." << std::endl;
         return;
     }
@@ -534,7 +736,6 @@ void doList(SOCKET sock, std::string &recv_buffer, const std::string &remoteDir,
         std::cout << finalReply << std::endl;
     }
 }
-
 int main(int argc, char *argv[])
 {
     init_sockets();
@@ -590,6 +791,9 @@ int main(int argc, char *argv[])
         std::cout << greeting << std::endl;
     }
 
+    if (!fs::exists(CLIENT_ROOT))
+    {
+        fs::create_directories(CLIENT_ROOT);
 
         std::string input;
         while (true)
@@ -607,16 +811,52 @@ int main(int argc, char *argv[])
             for (auto &c : upperVerb)
                 c = toupper(c);
 
-            if (upperVerb == "PUT")
-            {
-                std::string localPath, remoteName;
-                iss >> localPath >> remoteName;
-                if (localPath.empty())
-                {
-                    std::cout << "Usage: put <local_file> [remote_name]" << std::endl;
-                    continue;
+
+        if (g_active_channel != nullptr && upperVerb != "ABOR") {
+            log_error("Transfer in progress. Only ABOR is allowed.");
+            continue;
+        }
+
+        if (upperVerb == "ABOR") {
+            DataChannel* ch = g_active_channel.load();
+            if (ch != nullptr) {
+                // Bước 1: Gửi ABOR lên server trước
+                std::string to_send = "ABOR\r\n";
+                send(sock, to_send.c_str(), to_send.length(), 0);
+
+                // Bước 2: Set cờ hủy trên DataChannel → GBN sender / receiver thoát
+                ch->abortTransfer();
+
+                // Bước 3: Đợi transfer thread kết thúc (tối đa 3 giây)
+                // Transfer thread sẽ set g_active_channel = nullptr khi xong
+                log_info("Waiting for transfer thread to finish...");
+                for (int i = 0; i < 60 && g_active_channel.load() != nullptr; i++)
+                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+                if (g_active_channel.load() != nullptr) {
+                    log_error("Transfer thread did not finish in time.");
                 }
-                doPut(sock, recv_buffer, localPath, remoteName);
+
+                // Bước 4: Đọc reply server (426 abort + 226 success)
+                // Transfer thread có thể đã đọc 226 rồi — nếu không đọc được thì bỏ qua
+                std::string reply1, reply2;
+                receive_reply(sock, recv_buffer, reply1);
+                if (!reply1.empty()) std::cout << reply1;
+                receive_reply(sock, recv_buffer, reply2);
+                if (!reply2.empty()) std::cout << reply2;
+
+                log_info("ABOR complete.");
+            } else {
+                std::cout << "No transfer in progress." << std::endl;
+            }
+            continue;
+        }
+
+        if (upperVerb == "PUT") {
+            std::string localPath, remoteName;
+            iss >> localPath >> remoteName;
+            if (localPath.empty()) {
+                std::cout << "Usage: put <local_file> [remote_name]" << std::endl;
                 continue;
             }
 
@@ -747,7 +987,9 @@ int main(int argc, char *argv[])
             if (upperVerb == "QUIT")
                 break;
         }
+    }
     closesocket(sock);
     cleanup_sockets();
     return 0;
+}
 }
